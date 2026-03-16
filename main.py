@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 import json
 import wikipedia
 from fastapi.middleware.cors import CORSMiddleware
-from langchain_community.embeddings.sentence_transformer import SentenceTransformerEmbeddings
+rom langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
 from langchain_community.vectorstores import Chroma
 from typing import List
 
@@ -31,7 +31,11 @@ client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 # --- LOAD THE DATABASE ON STARTUP ---
 # We load the embedding model and the ChromaDB folder we just created
 print("Loading Vector Database...")
-embedding_model = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+# We use the API now so we don't crash the server's memory!
+embedding_model = HuggingFaceInferenceAPIEmbeddings(
+    api_key=os.environ.get("HF_TOKEN"),
+    model_name="sentence-transformers/all-MiniLM-L6-v2"
+)
 db = Chroma(persist_directory="./my_vector_db", embedding_function=embedding_model)
 
 class SummaryRequest(BaseModel):

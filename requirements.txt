@@ -4,6 +4,5 @@ groq
 python-dotenv
 langchain-community
 chromadb
-sentence-transformers
 wikipedia
 pydantic
