@@ -26,7 +26,7 @@ export default function Chat() {
 
     try {
       // 2. Send the ENTIRE transcript array to our new FastAPI /chat endpoint
-      const response = await fetch('http://127.0.0.1:8000/chat', {
+      const response = await fetch('https://ai-agent-backend-l44r.onrender.com/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: updatedTranscript }),

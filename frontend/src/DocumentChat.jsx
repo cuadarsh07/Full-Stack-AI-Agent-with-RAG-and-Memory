@@ -11,7 +11,7 @@ import {
   Sparkles,
 } from 'lucide-react'
 
-const API_URL = 'http://127.0.0.1:8000/ask'
+const API_URL = 'https://ai-agent-backend-l44r.onrender.com/ask'
 
 const MotionDiv = motion.div
 const MotionSpan = motion.span
@@ -192,10 +192,10 @@ async function askDocument(trimmedQuestion, signal) {
 function toUserFacingError(fetchError) {
   const isAbort = fetchError instanceof DOMException && fetchError.name === 'AbortError'
   if (isAbort) {
-    return 'Request timed out. Is the FastAPI server responding at http://127.0.0.1:8000?'
+    return 'Request timed out. Is the FastAPI server responding at https://ai-agent-backend-l44r.onrender.com?'
   }
 
-  return 'Could not reach the backend. Is FastAPI running at http://127.0.0.1:8000?'
+  return 'Could not reach the backend. Is FastAPI running at hhttps://ai-agent-backend-l44r.onrender.com?'
 }
 
 async function submitQuestion({

@@ -15,7 +15,7 @@ export default function App() {
     setResult(null);
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/agent', {
+      const response = await fetch('https://ai-agent-backend-l44r.onrender.com/agent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question }),
