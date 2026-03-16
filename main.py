@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 import json
 import wikipedia
 from fastapi.middleware.cors import CORSMiddleware
-rom langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
+from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
 from langchain_community.vectorstores import Chroma
 from typing import List
 
