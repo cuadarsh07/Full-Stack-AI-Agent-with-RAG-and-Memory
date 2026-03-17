@@ -19,7 +19,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Allows all origins (good for local testing)
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -31,16 +31,14 @@ client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 # --- THE BULLETPROOF BYPASS ---
 class BulletproofHFEmbeddings(Embeddings):
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        # UPDATED: New Hugging Face Router URL
-        api_url = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2"
+        # FIXED: Added /pipeline/feature-extraction/ so HF doesn't guess the wrong task!
+        api_url = "https://router.huggingface.co/hf-inference/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
         headers = {"Authorization": f"Bearer {os.environ.get('HF_TOKEN')}"}
         
         print("Sending request to Hugging Face...")
-        # We force Hugging Face to wake up the model instead of immediately returning an error
         response = requests.post(api_url, headers=headers, json={"inputs": texts, "options": {"wait_for_model": True}})
         result = response.json()
         
-        # If HF still throws an error, we catch it, print it to Render logs, and retry!
         if isinstance(result, dict) and "error" in result:
             print(f"HF Error Detected: {result['error']}. Retrying in 5 seconds...")
             time.sleep(5)
@@ -55,7 +53,6 @@ class BulletproofHFEmbeddings(Embeddings):
 
 # --- LOAD THE DATABASE ON STARTUP ---
 print("Loading Vector Database...")
-# We use our custom bypass class now!
 embedding_model = BulletproofHFEmbeddings()
 db = Chroma(persist_directory="./my_vector_db", embedding_function=embedding_model)
 
@@ -78,7 +75,7 @@ def summarize_text(request: SummaryRequest):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": request.text}
         ],
-        model="llama-3.3-70b-versatile", # Kept as 70b!
+        model="llama-3.3-70b-versatile", 
         response_format={"type": "json_object"} 
     )
     
@@ -108,7 +105,7 @@ def ask_document(request: QuestionRequest):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": request.question}
         ],
-        model="llama-3.3-70b-versatile", # Kept as 70b!
+        model="llama-3.3-70b-versatile", 
     )
     
     return {
@@ -157,7 +154,7 @@ def run_agent(request: AgentRequest):
         {"role": "user", "content": request.question}
     ]
     response = client.chat.completions.create(
-        model="llama3-8b-8192", # CHANGED TO 8B FOR TOOL CALLING
+        model="llama-3.1-8b-instant", # FIXED: Replaced decommissioned model!
         messages=messages,
         tools=tools_menu,
         tool_choice="auto"
@@ -183,7 +180,7 @@ def run_agent(request: AgentRequest):
             })
 
             final_response = client.chat.completions.create(
-                model="llama3-8b-8192", # CHANGED TO 8B FOR TOOL CALLING
+                model="llama-3.1-8b-instant", # FIXED: Replaced decommissioned model!
                 messages=messages
             )
             
@@ -219,7 +216,7 @@ def run_chat(request: ChatHistoryRequest):
     full_conversation = [system_prompt] + conversation_history
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile", # Kept as 70b!
+        model="llama-3.3-70b-versatile", 
         messages=full_conversation
     )
 
