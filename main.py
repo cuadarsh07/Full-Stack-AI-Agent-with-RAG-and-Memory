@@ -12,7 +12,6 @@ import requests
 import time
 from langchain_core.embeddings import Embeddings
 
-
 # 1. Load the secret API key from the .env file
 load_dotenv() 
 
@@ -32,7 +31,8 @@ client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 # --- THE BULLETPROOF BYPASS ---
 class BulletproofHFEmbeddings(Embeddings):
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        api_url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+        # UPDATED: New Hugging Face Router URL
+        api_url = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2"
         headers = {"Authorization": f"Bearer {os.environ.get('HF_TOKEN')}"}
         
         print("Sending request to Hugging Face...")
@@ -66,7 +66,6 @@ class SummaryRequest(BaseModel):
 
 @app.post("/summarize")
 def summarize_text(request: SummaryRequest):
-    # 1. Update the instructions to DEMAND a specific JSON structure
     system_prompt = f"""You are an expert editor. Summarize the text provided by the user. 
     Use this exact style: {request.style}. 
     You MUST respond in valid JSON format. 
@@ -79,16 +78,12 @@ def summarize_text(request: SummaryRequest):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": request.text}
         ],
-        model="llama-3.3-70b-versatile",
-        # 2. The Magic Line: This forces the model to only output valid JSON
+        model="llama-3.3-70b-versatile", # Kept as 70b!
         response_format={"type": "json_object"} 
     )
     
-    # 3. The AI gives us a JSON string, so we convert it into a real Python dictionary
     raw_response = chat_completion.choices[0].message.content
     structured_summary = json.loads(raw_response)
-    
-    # Now we can send this beautifully structured data to our frontend!
     return structured_summary
 
 # --- NEW RAG ENDPOINT ---
@@ -97,13 +92,9 @@ class QuestionRequest(BaseModel):
 
 @app.post("/ask")
 def ask_document(request: QuestionRequest):
-    # 1. Search the Vector Database for the 3 most relevant chunks
     docs = db.similarity_search(request.question, k=3)
-    
-    # 2. Combine those chunks into one big string of text
     context_text = "\n\n".join([doc.page_content for doc in docs])
     
-    # 3. Build the strict "Open-Book" instructions for the AI
     system_prompt = f"""You are a helpful company assistant. 
     Answer the user's question using ONLY the following context. 
     If the answer is not contained in the context, say exactly: 'I am sorry, but I do not have information about that in my documents.'
@@ -112,16 +103,14 @@ def ask_document(request: QuestionRequest):
     {context_text}
     """
     
-    # 4. Send the prompt to the Groq Chef
     chat_completion = client.chat.completions.create(
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": request.question}
         ],
-        model="llama-3.3-70b-versatile",
+        model="llama-3.3-70b-versatile", # Kept as 70b!
     )
     
-    # 5. Return the AI's answer, PLUS the actual chunks we used so the user can see the proof!
     return {
         "answer": chat_completion.choices[0].message.content,
         "sources_used": [doc.page_content for doc in docs]
@@ -140,7 +129,6 @@ def search_wikipedia_tool(query: str):
 
 @app.post("/agent")
 def run_agent(request: AgentRequest):
-    # 1. The Menu
     tools_menu = [{
         "type": "function",
         "function": {
@@ -156,7 +144,6 @@ def run_agent(request: AgentRequest):
         },
     }]
 
-    # 2. The Initial Request
     messages = [
         {
             "role": "system", 
@@ -170,7 +157,7 @@ def run_agent(request: AgentRequest):
         {"role": "user", "content": request.question}
     ]
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile", # Llama 3.3 is specifically trained for tool calling!
+        model="llama3-8b-8192", # CHANGED TO 8B FOR TOOL CALLING
         messages=messages,
         tools=tools_menu,
         tool_choice="auto"
@@ -178,7 +165,6 @@ def run_agent(request: AgentRequest):
 
     response_message = response.choices[0].message
 
-    # 3. If the AI decides to use the tool...
     if response_message.tool_calls:
         tool_call = response_message.tool_calls[0]
         
@@ -186,10 +172,8 @@ def run_agent(request: AgentRequest):
             arguments = json.loads(tool_call.function.arguments)
             search_query = arguments.get("query")
             
-            # Run the Python function!
             wiki_data = search_wikipedia_tool(search_query)
 
-            # Hand the data back to the AI
             messages.append(response_message)
             messages.append({
                 "tool_call_id": tool_call.id,
@@ -198,20 +182,17 @@ def run_agent(request: AgentRequest):
                 "content": wiki_data,
             })
 
-            # Get the final human-readable answer
             final_response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="llama3-8b-8192", # CHANGED TO 8B FOR TOOL CALLING
                 messages=messages
             )
             
-            # Return the answer AND proof that we searched the web!
             return {
                 "answer": final_response.choices[0].message.content,
                 "used_tool": True,
                 "search_query": search_query
             }
 
-    # If the AI didn't need the tool (e.g., you just said "Hello")
     return {
         "answer": response_message.content, 
         "used_tool": False, 
@@ -224,28 +205,22 @@ class MessageItem(BaseModel):
     content: str
 
 class ChatHistoryRequest(BaseModel):
-    # Instead of one string, we ask for a LIST of messages!
     messages: List[MessageItem]
 
 @app.post("/chat")
 def run_chat(request: ChatHistoryRequest):
-    # 1. Convert the Pydantic request into a standard Python dictionary format for Groq
     conversation_history = [{"role": msg.role, "content": msg.content} for msg in request.messages]
     
-    # 2. Create the System Prompt (The AI's personality)
     system_prompt = {
         "role": "system", 
         "content": "You are a friendly, conversational AI. You have perfect memory of this conversation."
     }
     
-    # 3. Combine the System Prompt with the entire transcript the frontend sent us
     full_conversation = [system_prompt] + conversation_history
 
-    # 4. Send the ENTIRE transcript to Groq
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="llama-3.3-70b-versatile", # Kept as 70b!
         messages=full_conversation
     )
 
-    # 5. Return only the AI's newest reply
     return {"reply": response.choices[0].message.content}
