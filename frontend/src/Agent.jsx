@@ -40,7 +40,7 @@ export default function App() {
           <Globe className="w-8 h-8" />
         </div>
         <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight mb-4">
-          Wikipedia <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-400">Agent</span>
+          Live Web <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-400">Agent</span>
         </h1>
         <p className="text-gray-400 max-w-lg mx-auto text-lg">
           Ask any factual question. The AI will autonomously search the live internet to find the answer.

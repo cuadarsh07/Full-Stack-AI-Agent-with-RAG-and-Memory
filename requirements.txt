@@ -4,5 +4,6 @@ groq
 python-dotenv
 langchain-community
 chromadb
-wikipedia
+tavily-python
 pydantic
+requests

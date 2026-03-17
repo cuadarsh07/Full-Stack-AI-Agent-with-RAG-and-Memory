@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from groq import Groq
 from dotenv import load_dotenv
 import json
-import wikipedia
+from tavily import TavilyClient
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_community.vectorstores import Chroma
 from typing import List
@@ -25,20 +25,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 2. Initialize the Groq client (The Chef)
+# 2. Initialize the Groq client AND the new Tavily Web Search client
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+tavily_client = TavilyClient(api_key=os.environ.get("TAVILY_API_KEY"))
 
 # --- THE BULLETPROOF BYPASS ---
 class BulletproofHFEmbeddings(Embeddings):
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        # 100% CORRECT URL: The pipeline task goes at the very end!
+        # 100% CORRECT URL
         api_url = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
         headers = {"Authorization": f"Bearer {os.environ.get('HF_TOKEN')}"}
         
         print("Sending request to Hugging Face...")
         response = requests.post(api_url, headers=headers, json={"inputs": texts, "options": {"wait_for_model": True}})
         
-        # SUPER SAFETY NET: If HF sends back an HTML 404/502 error page, this stops the JSONDecodeError crash!
         try:
             result = response.json()
         except Exception:
@@ -47,7 +47,6 @@ class BulletproofHFEmbeddings(Embeddings):
             response = requests.post(api_url, headers=headers, json={"inputs": texts, "options": {"wait_for_model": True}})
             result = response.json()
             
-        # If HF sends back a standard JSON error (like "Model is loading")
         if isinstance(result, dict) and "error" in result:
             print(f"HF Error Detected: {result['error']}. Retrying in 5 seconds...")
             time.sleep(5)
@@ -92,7 +91,7 @@ def summarize_text(request: SummaryRequest):
     structured_summary = json.loads(raw_response)
     return structured_summary
 
-# --- NEW RAG ENDPOINT ---
+# --- RAG ENDPOINT ---
 class QuestionRequest(BaseModel):
     question: str
 
@@ -122,28 +121,32 @@ def ask_document(request: QuestionRequest):
         "sources_used": [doc.page_content for doc in docs]
     }
 
-# --- NEW MONTH 3: AI AGENT WITH TOOLS ---
+# --- NEW: LIVE WEB AGENT WITH TAVILY ---
 class AgentRequest(BaseModel):
     question: str
 
-def search_wikipedia_tool(query: str):
-    """The actual Python function that searches the web."""
+def search_web_tool(query: str):
+    """Searches the live internet and reads the top pages using Tavily."""
     try:
-        return json.dumps({"result": wikipedia.summary(query, sentences=2)})
-    except Exception:
-        return json.dumps({"error": "Could not find a Wikipedia page for that exact term."})
+        # We ask Tavily to grab the top 3 web results
+        response = tavily_client.search(query=query, search_depth="basic", max_results=3)
+        # We clean the data so the LLM only gets the URL and the content
+        results = [{"url": res["url"], "content": res["content"]} for res in response.get("results", [])]
+        return json.dumps(results)
+    except Exception as e:
+        return json.dumps({"error": f"Web search failed: {str(e)}"})
 
 @app.post("/agent")
 def run_agent(request: AgentRequest):
     tools_menu = [{
         "type": "function",
         "function": {
-            "name": "search_wikipedia_tool",
-            "description": "Search Wikipedia for facts, history, or current events.",
+            "name": "search_web_tool",
+            "description": "Search the live internet for current events, facts, sports scores, and real-time data.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "The exact search term."}
+                    "query": {"type": "string", "description": "The exact Google search query to use."}
                 },
                 "required": ["query"],
             },
@@ -153,17 +156,18 @@ def run_agent(request: AgentRequest):
     messages = [
         {
             "role": "system", 
-            "content": """You are a smart AI Agent. If you do not know a fact, use the search_wikipedia_tool. 
-            CRITICAL RULES FOR WIKIPEDIA: 
-            1. Wikipedia only accepts short, exact page names (e.g., 'Suryakumar Yadav'). 
-            2. NEVER use long sentences or action words in your search query. 
-            3. If the user uses abbreviations, convert them to the full name before searching.
-            4. NEVER output raw XML or <function> tags in your final response. If the tool doesn't give you the exact stats, just politely tell the user the data isn't in the Wikipedia summary."""
+            "content": """You are a professional, live web-search agent.
+            RULES:
+            1. If you don't know a fact or if it is a current event, use the search_web_tool.
+            2. ALWAYS provide a direct, concise answer FIRST.
+            3. NEVER narrate your internal process (e.g., never say 'I will search for...' or 'According to the tool...').
+            4. NEVER output raw XML or <function> tags.
+            5. If you use the tool, briefly cite the source URLs provided at the end of your answer."""
         },
         {"role": "user", "content": request.question}
     ]
     response = client.chat.completions.create(
-        model="llama-3.1-8b-instant", # GUARANTEED WORKING MODEL
+        model="llama-3.1-8b-instant", 
         messages=messages,
         tools=tools_menu,
         tool_choice="auto"
@@ -174,22 +178,22 @@ def run_agent(request: AgentRequest):
     if response_message.tool_calls:
         tool_call = response_message.tool_calls[0]
         
-        if tool_call.function.name == "search_wikipedia_tool":
+        if tool_call.function.name == "search_web_tool":
             arguments = json.loads(tool_call.function.arguments)
             search_query = arguments.get("query")
             
-            wiki_data = search_wikipedia_tool(search_query)
+            web_data = search_web_tool(search_query)
 
             messages.append(response_message)
             messages.append({
                 "tool_call_id": tool_call.id,
                 "role": "tool",
-                "name": "search_wikipedia_tool",
-                "content": wiki_data,
+                "name": "search_web_tool",
+                "content": web_data,
             })
 
             final_response = client.chat.completions.create(
-                model="llama-3.1-8b-instant", # GUARANTEED WORKING MODEL
+                model="llama-3.1-8b-instant", 
                 messages=messages
             )
             
@@ -205,7 +209,7 @@ def run_agent(request: AgentRequest):
         "search_query": None
     }
 
-# --- NEW MONTH 4: MEMORY & CHAT HISTORY ---
+# --- MEMORY & CHAT HISTORY ---
 class MessageItem(BaseModel):
     role: str
     content: str
