@@ -6,10 +6,11 @@ from dotenv import load_dotenv
 import json
 import wikipedia
 from fastapi.middleware.cors import CORSMiddleware
-from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
 from langchain_community.vectorstores import Chroma
 from typing import List
-
+import requests
+import time
+from langchain_core.embeddings import Embeddings
 
 
 # 1. Load the secret API key from the .env file
@@ -28,15 +29,36 @@ app.add_middleware(
 # 2. Initialize the Groq client (The Chef)
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
+# --- THE BULLETPROOF BYPASS ---
+class BulletproofHFEmbeddings(Embeddings):
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        api_url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+        headers = {"Authorization": f"Bearer {os.environ.get('HF_TOKEN')}"}
+        
+        print("Sending request to Hugging Face...")
+        # We force Hugging Face to wake up the model instead of immediately returning an error
+        response = requests.post(api_url, headers=headers, json={"inputs": texts, "options": {"wait_for_model": True}})
+        result = response.json()
+        
+        # If HF still throws an error, we catch it, print it to Render logs, and retry!
+        if isinstance(result, dict) and "error" in result:
+            print(f"HF Error Detected: {result['error']}. Retrying in 5 seconds...")
+            time.sleep(5)
+            response = requests.post(api_url, headers=headers, json={"inputs": texts, "options": {"wait_for_model": True}})
+            result = response.json()
+            
+        return result
+
+    def embed_query(self, text: str) -> List[float]:
+        return self.embed_documents([text])[0]
+
+
 # --- LOAD THE DATABASE ON STARTUP ---
-# We load the embedding model and the ChromaDB folder we just created
 print("Loading Vector Database...")
-# We use the API now so we don't crash the server's memory!
-embedding_model = HuggingFaceInferenceAPIEmbeddings(
-    api_key=os.environ.get("HF_TOKEN"),
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
+# We use our custom bypass class now!
+embedding_model = BulletproofHFEmbeddings()
 db = Chroma(persist_directory="./my_vector_db", embedding_function=embedding_model)
+
 
 class SummaryRequest(BaseModel):
     text: str
@@ -57,7 +79,7 @@ def summarize_text(request: SummaryRequest):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": request.text}
         ],
-        model="openai/gpt-oss-120b",
+        model="llama-3.3-70b-versatile",
         # 2. The Magic Line: This forces the model to only output valid JSON
         response_format={"type": "json_object"} 
     )
