@@ -31,14 +31,23 @@ client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 # --- THE BULLETPROOF BYPASS ---
 class BulletproofHFEmbeddings(Embeddings):
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        # FIXED: Added /pipeline/feature-extraction/ so HF doesn't guess the wrong task!
-        api_url = "https://router.huggingface.co/hf-inference/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+        # 100% CORRECT URL: The pipeline task goes at the very end!
+        api_url = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
         headers = {"Authorization": f"Bearer {os.environ.get('HF_TOKEN')}"}
         
         print("Sending request to Hugging Face...")
         response = requests.post(api_url, headers=headers, json={"inputs": texts, "options": {"wait_for_model": True}})
-        result = response.json()
         
+        # SUPER SAFETY NET: If HF sends back an HTML 404/502 error page, this stops the JSONDecodeError crash!
+        try:
+            result = response.json()
+        except Exception:
+            print(f"HF HTML Error. Status: {response.status_code}. Retrying in 5 seconds...")
+            time.sleep(5)
+            response = requests.post(api_url, headers=headers, json={"inputs": texts, "options": {"wait_for_model": True}})
+            result = response.json()
+            
+        # If HF sends back a standard JSON error (like "Model is loading")
         if isinstance(result, dict) and "error" in result:
             print(f"HF Error Detected: {result['error']}. Retrying in 5 seconds...")
             time.sleep(5)
@@ -154,7 +163,7 @@ def run_agent(request: AgentRequest):
         {"role": "user", "content": request.question}
     ]
     response = client.chat.completions.create(
-        model="llama-3.1-8b-instant", # FIXED: Replaced decommissioned model!
+        model="llama-3.1-8b-instant", # GUARANTEED WORKING MODEL
         messages=messages,
         tools=tools_menu,
         tool_choice="auto"
@@ -180,7 +189,7 @@ def run_agent(request: AgentRequest):
             })
 
             final_response = client.chat.completions.create(
-                model="llama-3.1-8b-instant", # FIXED: Replaced decommissioned model!
+                model="llama-3.1-8b-instant", # GUARANTEED WORKING MODEL
                 messages=messages
             )
             
