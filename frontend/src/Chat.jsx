@@ -218,7 +218,7 @@ AssistantMarkdown.propTypes = {
   content: PropTypes.string.isRequired,
 }
 
-export default function Chat() {
+export default function Chat({ newChatEventName }) {
   const [messages, setMessages] = useState(() => loadStoredMessages())
   const [sessionId, setSessionId] = useState(
     () => localStorage.getItem(SESSION_STORAGE_KEY) ?? makeSessionId(),
@@ -265,6 +265,22 @@ export default function Chat() {
     setInput(prompt)
     requestAnimationFrame(() => textareaRef.current?.focus())
   }
+
+  useEffect(() => {
+    if (!newChatEventName) {
+      return undefined
+    }
+
+    const handleExternalNewChat = () => {
+      handleNewChat()
+    }
+
+    globalThis.addEventListener(newChatEventName, handleExternalNewChat)
+
+    return () => {
+      globalThis.removeEventListener(newChatEventName, handleExternalNewChat)
+    }
+  }, [newChatEventName, handleNewChat])
 
   const handleSendMessage = async (event) => {
     event.preventDefault()
@@ -387,35 +403,35 @@ export default function Chat() {
   }
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden rounded-[32px] border border-white/10 bg-[linear-gradient(180deg,_rgba(11,27,34,0.94)_0%,_rgba(7,18,24,0.98)_100%)] shadow-[0_32px_100px_rgba(0,0,0,0.38)]">
-      <div className={`flex-shrink-0 border-b border-white/10 bg-white/[0.03] px-5 sm:px-6 ${hasMessages ? 'py-3' : 'py-4 sm:py-5'}`}>
+    <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden rounded-[28px] border border-white/10 bg-[linear-gradient(180deg,_rgba(11,27,34,0.94)_0%,_rgba(7,18,24,0.98)_100%)] shadow-[0_32px_100px_rgba(0,0,0,0.38)]">
+      <div className={`flex-shrink-0 border-b border-white/10 bg-white/[0.03] px-4 sm:px-5 ${hasMessages ? 'py-2.5' : 'py-3.5 sm:py-4'}`}>
         <div className={`flex flex-col gap-3 ${hasMessages ? 'xl:flex-row xl:items-center xl:justify-end' : 'xl:flex-row xl:items-end xl:justify-between'}`}>
           {!hasMessages && (
-            <div className="max-w-2xl">
-              <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.06] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.26em] text-stone-300">
+            <div className="max-w-xl">
+              <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.06] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-stone-300">
                 <MessageSquareText className="h-3.5 w-3.5" />
                 Conversation
               </div>
-              <h2 className="mt-2 text-xl font-black tracking-tight text-white sm:text-[1.7rem]">
+              <h2 className="mt-2 text-lg font-black tracking-tight text-white sm:text-[1.45rem]">
                 Ask naturally. Get a clear answer.
               </h2>
-              <p className="mt-1.5 max-w-xl text-sm leading-6 text-zinc-300 sm:text-[14px]">
+              <p className="mt-1.5 max-w-lg text-[13px] leading-5 text-zinc-300 sm:text-[13px]">
                 Ask about Adarsh's background, explore his resume, or check the latest news. The assistant keeps the routing behind the scenes and the experience simple.
               </p>
             </div>
           )}
 
-          <div className={`flex flex-wrap items-center gap-3 text-xs text-zinc-300 ${hasMessages ? 'justify-between' : 'xl:justify-end'}`}>
-            <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1.5">
+          <div className={`flex flex-wrap items-center gap-2.5 text-[11px] text-zinc-300 ${hasMessages ? 'justify-between' : 'xl:justify-end'}`}>
+            <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1">
               {hasMessages ? 'Conversation in progress' : 'Fresh chat ready'}
             </span>
-            <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1.5">
+            <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1">
               {totalAssistantMessages} replies saved
             </span>
             <button
               type="button"
               onClick={handleNewChat}
-              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-amber-300 px-6 py-3 text-sm font-bold text-slate-950 shadow-[0_16px_36px_rgba(252,211,77,0.26)] transition hover:bg-amber-200 focus:outline-none focus:ring-2 focus:ring-amber-200/60 focus:ring-offset-2 focus:ring-offset-slate-950 sm:text-[15px]"
+              className="hidden md:inline-flex items-center justify-center gap-2 rounded-xl bg-amber-300 px-5 py-2.5 text-sm font-bold text-slate-950 shadow-[0_16px_36px_rgba(252,211,77,0.26)] transition hover:bg-amber-200 focus:outline-none focus:ring-2 focus:ring-amber-200/60 focus:ring-offset-2 focus:ring-offset-slate-950"
             >
               <Plus className="h-4 w-4" />
               New Chat
@@ -424,17 +440,17 @@ export default function Chat() {
         </div>
 
         {error && (
-          <div className={`flex items-start gap-3 rounded-2xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100 ${hasMessages ? 'mt-3' : 'mt-4'}`}>
+          <div className={`flex items-start gap-3 rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 py-2.5 text-sm text-amber-100 ${hasMessages ? 'mt-3' : 'mt-4'}`}>
             <AlertTriangle className="mt-0.5 h-4 w-4 flex-none" />
             <span>{error}</span>
           </div>
         )}
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div className={`flex-1 overflow-y-auto px-4 sm:px-6 ${hasMessages ? 'py-4' : 'py-5'}`}>
+      <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+        <div className={`flex-1 overflow-y-auto px-3.5 sm:px-5 ${hasMessages ? 'py-3.5' : 'py-4'}`}>
           {hasMessages ? (
-            <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">
+            <div className="mx-auto flex w-full max-w-[56rem] flex-col gap-5">
               {messages.map((message, index) => {
                 const isAssistant = message.role === 'assistant'
                 const isFeedbackPending = Boolean(pendingFeedback[message.id])
@@ -442,29 +458,29 @@ export default function Chat() {
                 return (
                   <div
                     key={message.id}
-                    className={`flex gap-4 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                    className={`flex gap-3 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
                   >
                     {isAssistant && (
-                      <div className="mt-1 flex h-10 w-10 flex-none items-center justify-center rounded-2xl bg-amber-300/12 text-amber-100 shadow-[0_0_0_1px_rgba(252,211,77,0.14)]">
-                        <Bot className="h-5 w-5" />
+                      <div className="mt-1 flex h-9 w-9 flex-none items-center justify-center rounded-xl bg-amber-300/12 text-amber-100 shadow-[0_0_0_1px_rgba(252,211,77,0.14)]">
+                        <Bot className="h-4.5 w-4.5" />
                       </div>
                     )}
 
                     <div
-                      className={`max-w-[88%] rounded-[28px] border px-5 py-4 shadow-[0_20px_60px_rgba(0,0,0,0.18)] sm:max-w-[78%] ${
+                      className={`max-w-[90%] rounded-[24px] border px-4 py-3.5 shadow-[0_20px_60px_rgba(0,0,0,0.18)] sm:max-w-[76%] ${
                         message.role === 'user'
                           ? 'border-sky-400/20 bg-sky-400/12 text-white'
                           : 'border-white/10 bg-white/[0.04] text-zinc-100'
                       }`}
                     >
                       {message.role === 'user' ? (
-                        <p className="whitespace-pre-wrap leading-7 text-white">{message.content}</p>
+                        <p className="whitespace-pre-wrap text-[15px] leading-6 text-white">{message.content}</p>
                       ) : (
                         <AssistantMarkdown content={message.content} />
                       )}
 
                       {isAssistant && message.toolsUsed.length > 0 && (
-                        <div className="mt-4 flex flex-wrap gap-2 border-t border-white/10 pt-4">
+                        <div className="mt-3.5 flex flex-wrap gap-2 border-t border-white/10 pt-3.5">
                           {message.toolsUsed.map((tool) => (
                             <ToolBadge key={`${message.id}-${tool.name}-${tool.label}`} tool={tool} />
                           ))}
@@ -472,20 +488,20 @@ export default function Chat() {
                       )}
 
                       {isAssistant && message.escalated && (
-                        <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-amber-400/30 bg-amber-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-amber-100">
+                        <div className="mt-3.5 inline-flex items-center gap-2 rounded-full border border-amber-400/30 bg-amber-400/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-100">
                           <ShieldAlert className="h-3.5 w-3.5" />
                           Needs more verified info
                         </div>
                       )}
 
                       {isAssistant && message.warnings.length > 0 && (
-                        <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-xs leading-6 text-zinc-400">
+                        <div className="mt-3.5 rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 text-xs leading-5 text-zinc-400">
                           {message.warnings.join(' ')}
                         </div>
                       )}
 
                       {isAssistant && message.id && (
-                        <div className="mt-4 flex items-center gap-2 border-t border-white/10 pt-4">
+                        <div className="mt-3.5 flex items-center gap-2 border-t border-white/10 pt-3.5">
                           <button
                             type="button"
                             onClick={() => handleFeedback(message.id, true, index)}
@@ -518,8 +534,8 @@ export default function Chat() {
                     </div>
 
                     {message.role === 'user' && (
-                      <div className="mt-1 flex h-10 w-10 flex-none items-center justify-center rounded-2xl bg-sky-400/15 text-sky-100 shadow-[0_0_0_1px_rgba(56,189,248,0.18)]">
-                        <User className="h-5 w-5" />
+                      <div className="mt-1 flex h-9 w-9 flex-none items-center justify-center rounded-xl bg-sky-400/15 text-sky-100 shadow-[0_0_0_1px_rgba(56,189,248,0.18)]">
+                        <User className="h-4.5 w-4.5" />
                       </div>
                     )}
                   </div>
@@ -527,11 +543,11 @@ export default function Chat() {
               })}
 
               {isLoading && (
-                <div className="flex justify-start gap-4">
-                  <div className="mt-1 flex h-10 w-10 flex-none items-center justify-center rounded-2xl bg-amber-300/12 text-amber-100 shadow-[0_0_0_1px_rgba(252,211,77,0.14)]">
-                    <Loader2 className="h-5 w-5 animate-spin" />
+                <div className="flex justify-start gap-3">
+                  <div className="mt-1 flex h-9 w-9 flex-none items-center justify-center rounded-xl bg-amber-300/12 text-amber-100 shadow-[0_0_0_1px_rgba(252,211,77,0.14)]">
+                    <Loader2 className="h-4.5 w-4.5 animate-spin" />
                   </div>
-                  <div className="max-w-[78%] rounded-[28px] border border-white/10 bg-white/[0.04] px-5 py-4 text-zinc-300">
+                  <div className="max-w-[76%] rounded-[24px] border border-white/10 bg-white/[0.04] px-4 py-3.5 text-zinc-300">
                     <div className="flex flex-wrap gap-2">
                       <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-xs font-semibold text-emerald-100">
                         Reviewing profile details
@@ -540,7 +556,7 @@ export default function Chat() {
                         Checking recent information
                       </span>
                     </div>
-                    <p className="mt-4 text-sm leading-7 text-zinc-300">
+                    <p className="mt-3.5 text-sm leading-6 text-zinc-300">
                       Thinking through the best answer for you.
                     </p>
                   </div>
@@ -548,27 +564,27 @@ export default function Chat() {
               )}
             </div>
           ) : (
-            <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col items-center justify-center rounded-[30px] border border-dashed border-white/10 bg-white/[0.03] px-6 py-8 text-center sm:px-10">
-              <div className="flex h-[4.5rem] w-[4.5rem] items-center justify-center rounded-[24px] bg-amber-300/12 text-amber-100 shadow-[0_0_0_1px_rgba(252,211,77,0.14)]">
-                <Bot className="h-9 w-9" />
+            <div className="mx-auto flex min-h-full w-full max-w-[52rem] flex-col items-center justify-center rounded-[26px] border border-dashed border-white/10 bg-white/[0.03] px-6 py-6 text-center sm:px-8">
+              <div className="flex h-16 w-16 items-center justify-center rounded-[20px] bg-amber-300/12 text-amber-100 shadow-[0_0_0_1px_rgba(252,211,77,0.14)]">
+                <Bot className="h-8 w-8" />
               </div>
-              <p className="mt-6 font-[var(--font-accent)] text-3xl italic text-amber-50">
+              <p className="mt-5 font-[var(--font-accent)] text-[2rem] italic text-amber-50 sm:text-[2.15rem]">
                 Welcome to Adarsh AI
               </p>
-              <h3 className="mt-2 text-3xl font-black tracking-tight text-white sm:text-[2.5rem]">
+              <h3 className="mt-2 text-[2rem] font-black tracking-tight text-white sm:text-[2.2rem]">
                 Ask me anything in plain language.
               </h3>
-              <p className="mt-4 max-w-2xl text-sm leading-8 text-zinc-300 sm:text-base">
+              <p className="mt-3.5 max-w-xl text-sm leading-7 text-zinc-300 sm:text-[15px]">
                 Ask me anything about Adarsh's background, projects, and experience, or let me search the live web for current events and recent updates.
               </p>
 
-              <div className="mt-8 flex w-full max-w-2xl flex-wrap justify-center gap-3">
+              <div className="mt-6 flex w-full max-w-xl flex-wrap justify-center gap-2.5">
                 {STARTER_PROMPTS.map((prompt) => (
                   <button
                     key={prompt}
                     type="button"
                     onClick={() => handlePromptSelection(prompt)}
-                    className="rounded-full border border-white/10 bg-white/[0.05] px-4 py-2.5 text-sm text-zinc-200 transition hover:border-amber-200/30 hover:bg-amber-200/10 hover:text-white"
+                    className="rounded-full border border-white/10 bg-white/[0.05] px-4 py-2 text-sm text-zinc-200 transition hover:border-amber-200/30 hover:bg-amber-200/10 hover:text-white"
                   >
                     {prompt}
                   </button>
@@ -580,8 +596,8 @@ export default function Chat() {
           <div ref={messagesEndRef} />
         </div>
 
-        <div className="flex-shrink-0 border-t border-white/10 bg-black/20 px-4 pt-4 pb-6 sm:px-6">
-          <form onSubmit={handleSendMessage} className="mx-auto flex max-w-4xl flex-col gap-3 sm:flex-row sm:items-end">
+        <div className="flex-shrink-0 border-t border-white/10 bg-black/20 p-3.5 pb-[calc(0.875rem+env(safe-area-inset-bottom))] sm:px-5 sm:pb-5">
+          <form onSubmit={handleSendMessage} className="mx-auto flex max-w-[56rem] flex-col gap-3 sm:flex-row sm:items-end">
             <label className="flex-1">
               <span className="sr-only">Message</span>
               <textarea
@@ -589,7 +605,7 @@ export default function Chat() {
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 placeholder="Ask about Adarsh, his resume, projects, or any current topic..."
-                className="min-h-[4rem] w-full resize-none rounded-[26px] border border-white/10 bg-white/[0.04] px-4 py-3 text-sm leading-6 text-white outline-none transition placeholder:text-zinc-500 focus:border-amber-200/40 focus:bg-white/[0.06]"
+                className="min-h-[3.5rem] w-full resize-none rounded-[22px] border border-white/10 bg-white/[0.04] px-4 py-2.5 text-sm leading-6 text-white outline-none transition placeholder:text-zinc-500 focus:border-amber-200/40 focus:bg-white/[0.06]"
                 disabled={isLoading}
                 rows={2}
               />
@@ -597,7 +613,7 @@ export default function Chat() {
             <button
               type="submit"
               disabled={isLoading || !input.trim()}
-              className="inline-flex items-center justify-center gap-2 rounded-[26px] border border-amber-300/30 bg-amber-300/15 px-5 py-3 text-sm font-semibold text-amber-50 transition hover:bg-amber-300/20 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+              className="inline-flex items-center justify-center gap-2 rounded-[22px] border border-amber-300/30 bg-amber-300/15 px-5 py-2.5 text-sm font-semibold text-amber-50 transition hover:bg-amber-300/20 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
             >
               {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               Send Message
@@ -607,4 +623,12 @@ export default function Chat() {
       </div>
     </div>
   )
+}
+
+Chat.propTypes = {
+  newChatEventName: PropTypes.string,
+}
+
+Chat.defaultProps = {
+  newChatEventName: undefined,
 }
