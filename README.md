@@ -45,6 +45,16 @@ A context-aware AI assistant with perfect conversational memory.
 - Node.js 18+
 - Groq API key ([Get it free](https://console.groq.com))
 
+### Frontend API Configuration
+
+Set `VITE_API_URL` in the frontend environment when you want the React app to target a local backend during development.
+
+```bash
+VITE_API_URL=http://127.0.0.1:8000
+```
+
+If `VITE_API_URL` is not set, the frontend falls back to the deployed Render backend at `https://ai-agent-backend-l44r.onrender.com`.
+
 ### Backend Setup
 
 1. **Install Python dependencies:**

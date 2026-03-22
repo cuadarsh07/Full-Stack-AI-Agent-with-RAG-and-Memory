@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Search, Globe, Sparkles, Loader2 } from 'lucide-react';
 
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://ai-agent-backend-l44r.onrender.com';
+
 export default function App() {
   const [question, setQuestion] = useState('');
   const [result, setResult] = useState(null);
@@ -15,7 +17,7 @@ export default function App() {
     setResult(null);
 
     try {
-      const response = await fetch('https://ai-agent-backend-l44r.onrender.com/agent', {
+      const response = await fetch(`${API_BASE_URL}/agent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question }),
@@ -25,7 +27,7 @@ export default function App() {
       setResult(data);
     } catch (error) {
       console.error("Error connecting to Agent:", error);
-      alert("Backend connection failed! Is FastAPI running?");
+      alert("Backend connection failed. Check VITE_API_URL or the FastAPI server.");
     }
 
     setIsLoading(false);

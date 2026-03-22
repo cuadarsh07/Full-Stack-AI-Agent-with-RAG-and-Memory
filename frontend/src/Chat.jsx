@@ -18,7 +18,8 @@ import {
   User,
 } from 'lucide-react'
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000'
+const API_BASE_URL =
+  import.meta.env.VITE_API_URL || 'https://ai-agent-backend-l44r.onrender.com'
 const SESSION_STORAGE_KEY = 'adarsh-ai-session-id'
 const MESSAGE_STORAGE_KEY = 'adarsh-ai-visible-messages'
 const FALLBACK_ASSISTANT_REPLY = "I'm here and ready to help."
@@ -325,7 +326,7 @@ export default function Chat() {
       setError(
         requestError instanceof Error
           ? requestError.message
-          : 'Unable to reach the backend. Check VITE_API_BASE_URL or the FastAPI server.',
+          : 'Unable to reach the backend. Check VITE_API_URL or the FastAPI server.',
       )
     } finally {
       setIsLoading(false)
