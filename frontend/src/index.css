@@ -1,13 +1,42 @@
 @import "tailwindcss";
 
 @layer base {
+  :root {
+    --font-sans: "Manrope", "Segoe UI", sans-serif;
+    --font-accent: "Cormorant Garamond", Georgia, serif;
+    color-scheme: dark;
+  }
+
   html,
   body,
   #root {
     height: 100%;
+    width: 100%;
+    overflow: hidden;
   }
 
   body {
-    @apply bg-zinc-950 text-zinc-100 antialiased;
+    @apply text-zinc-100 antialiased;
+    font-family: var(--font-sans);
+    margin: 0;
+    overflow: hidden;
+    background:
+      radial-gradient(circle at top left, rgba(255, 255, 255, 0.16), transparent 22%),
+      linear-gradient(180deg, #f4ecdf 0%, #d8cec0 24%, #17313a 24%, #0c1b22 100%);
+    background-attachment: fixed;
+  }
+
+  * {
+    scrollbar-color: rgba(161, 161, 170, 0.35) transparent;
+  }
+
+  button,
+  input,
+  textarea {
+    font: inherit;
+  }
+
+  a {
+    color: inherit;
   }
 }
