@@ -138,6 +138,22 @@ class SearchResumeDatabaseInput(StrictBaseModel):
     )
 
 
+class RunResumeAgentInput(StrictBaseModel):
+    query: str = Field(
+        min_length=2,
+        max_length=300,
+        description="Question to delegate to the resume specialist agent.",
+    )
+
+
+class RunWebAgentInput(StrictBaseModel):
+    query: str = Field(
+        min_length=2,
+        max_length=300,
+        description="Question to delegate to the web research specialist agent.",
+    )
+
+
 class ToolErrorPayload(StrictBaseModel):
     type: str
     message: str
@@ -147,6 +163,7 @@ class ToolExecutionPayload(StrictBaseModel):
     success: bool
     tool_name: str
     query: str
+    summary: Optional[str] = None
     results: List[Dict[str, Any]] = Field(default_factory=list)
     error: Optional[ToolErrorPayload] = None
 
@@ -359,20 +376,164 @@ def search_resume_database_executor(tool_input: SearchResumeDatabaseInput) -> To
         )
 
 
+def run_resume_agent(query: str) -> ToolExecutionPayload:
+    tool_payload = search_resume_database_executor(SearchResumeDatabaseInput(query=query))
+    if not tool_payload.success:
+        if tool_payload.error is None:
+            return build_tool_error(
+                tool_name="run_resume_agent",
+                query=query,
+                error_type="tool_execution_error",
+                message="Resume specialist failed without an explicit error.",
+            )
+
+        return build_tool_error(
+            tool_name="run_resume_agent",
+            query=query,
+            error_type=tool_payload.error.type,
+            message=tool_payload.error.message,
+        )
+
+    context_lines = []
+    for item in tool_payload.results:
+        source = item.get("source") or "unknown_source"
+        page = item.get("page")
+        location = f"{source} page {page}" if page is not None else str(source)
+        context_lines.append(f"- [{location}] {item.get('content', '')}")
+
+    context_text = "\n".join(context_lines) if context_lines else "No resume matches were found."
+
+    try:
+        specialist_response = get_groq_client().chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a Resume Specialist. Your only job is to analyze Adarsh's resume "
+                        "data to answer specific questions about his background, skills, and projects."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Question: {query}\n\n"
+                        f"Resume evidence:\n{context_text}\n\n"
+                        "Answer using only the evidence above. If evidence is insufficient, say so clearly."
+                    ),
+                },
+            ],
+        )
+        summary = (specialist_response.choices[0].message.content or "").strip()
+    except Exception as exc:
+        return build_tool_error(
+            tool_name="run_resume_agent",
+            query=query,
+            error_type="worker_model_error",
+            message=f"Resume specialist model call failed: {exc}",
+        )
+
+    if not summary:
+        summary = "The resume specialist could not produce a grounded answer from the retrieved data."
+
+    return ToolExecutionPayload(
+        success=True,
+        tool_name="run_resume_agent",
+        query=query,
+        summary=summary,
+        results=tool_payload.results,
+    )
+
+
+def run_web_agent(query: str) -> ToolExecutionPayload:
+    tool_payload = search_live_web_executor(SearchLiveWebInput(query=query))
+    if not tool_payload.success:
+        if tool_payload.error is None:
+            return build_tool_error(
+                tool_name="run_web_agent",
+                query=query,
+                error_type="tool_execution_error",
+                message="Web specialist failed without an explicit error.",
+            )
+
+        return build_tool_error(
+            tool_name="run_web_agent",
+            query=query,
+            error_type=tool_payload.error.type,
+            message=tool_payload.error.message,
+        )
+
+    context_lines = []
+    for item in tool_payload.results:
+        url = item.get("url") or "unknown_url"
+        context_lines.append(f"- [{url}] {item.get('content', '')}")
+
+    context_text = "\n".join(context_lines) if context_lines else "No live web matches were found."
+
+    try:
+        specialist_response = get_groq_client().chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a Web Research Specialist. Your only job is to find the latest "
+                        "real-time information from the live internet."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Question: {query}\n\n"
+                        f"Live web evidence:\n{context_text}\n\n"
+                        "Answer using only the evidence above. If evidence is insufficient, say so clearly."
+                    ),
+                },
+            ],
+        )
+        summary = (specialist_response.choices[0].message.content or "").strip()
+    except Exception as exc:
+        return build_tool_error(
+            tool_name="run_web_agent",
+            query=query,
+            error_type="worker_model_error",
+            message=f"Web specialist model call failed: {exc}",
+        )
+
+    if not summary:
+        summary = "The web specialist could not produce a grounded answer from the retrieved sources."
+
+    return ToolExecutionPayload(
+        success=True,
+        tool_name="run_web_agent",
+        query=query,
+        summary=summary,
+        results=tool_payload.results,
+    )
+
+
+def run_resume_agent_executor(tool_input: RunResumeAgentInput) -> ToolExecutionPayload:
+    return run_resume_agent(tool_input.query)
+
+
+def run_web_agent_executor(tool_input: RunWebAgentInput) -> ToolExecutionPayload:
+    return run_web_agent(tool_input.query)
+
+
 TOOL_REGISTRY: Dict[str, ToolSpec] = {
-    "search_live_web": ToolSpec(
-        name="search_live_web",
-        label="Searched the web",
-        description="Search the live web for current events, recent facts, or information that may have changed.",
-        input_model=SearchLiveWebInput,
-        executor=search_live_web_executor,
+    "run_resume_agent": ToolSpec(
+        name="run_resume_agent",
+        label="Consulted resume specialist",
+        description="Delegate to the resume specialist worker for grounded answers from Adarsh's resume database.",
+        input_model=RunResumeAgentInput,
+        executor=run_resume_agent_executor,
     ),
-    "search_resume_database": ToolSpec(
-        name="search_resume_database",
-        label="Read resume",
-        description="Search the local resume database for verified information about the candidate's background, projects, skills, and experience.",
-        input_model=SearchResumeDatabaseInput,
-        executor=search_resume_database_executor,
+    "run_web_agent": ToolSpec(
+        name="run_web_agent",
+        label="Consulted web specialist",
+        description="Delegate to the web research specialist worker for current live internet information.",
+        input_model=RunWebAgentInput,
+        executor=run_web_agent_executor,
     ),
 }
 
@@ -384,15 +545,15 @@ def as_groq_messages(messages: List[MessageItem]) -> List[Dict[str, str]]:
 
 
 def build_master_system_prompt() -> str:
-    return f"""You are a unified production assistant.
+    return f"""You are a Supervisor / Project Manager assistant coordinating specialist workers.
 Rules:
-1. Use search_resume_database for questions about the resume, candidate profile, projects, skills, education, or past experience.
-2. Use search_live_web for current events, recent facts, or information that may have changed after training.
-3. If the user is just saying hello, goodbye, thanking you, or making small talk, DO NOT use any tools. Reply conversationally.
+1. Use run_resume_agent for questions about the resume, candidate profile, projects, skills, education, or past experience.
+2. Use run_web_agent for current events, recent facts, or information that may have changed after training.
+3. If the user is just saying hello, goodbye, thanking you, or making small talk, DO NOT use any worker agents. Reply directly and conversationally from your own pre-trained knowledge.
 4. NEVER output raw XML, tool markup, or <function> tags under any circumstances.
-5. You may call tools multiple times when needed, but keep each tool call focused.
-6. Never invent tool outputs. If a tool fails, either try a different tool or explain the limitation.
-7. If you still do not have enough verified information after using the tools, start your answer with '{ESCALATION_PREFIX}' and clearly state what is missing.
+5. You may call worker agents multiple times when needed, but keep each call focused.
+6. Never invent worker outputs. If a worker fails, either try the other worker or explain the limitation.
+7. If you still do not have enough verified information after using workers, start your answer with '{ESCALATION_PREFIX}' and clearly state what is missing.
 8. Give the final answer directly and concisely. Do not narrate your internal chain of thought.
 9. Prefer grounded answers over broad speculation.
 """
@@ -752,10 +913,7 @@ def run_agent(request: AgentRequest):
         MasterChatRequest(messages=[MessageItem(role="user", content=request.question)])
     )
 
-    web_tool = next(
-        (tool for tool in master_response.tools_used if tool.name == "search_live_web"),
-        None,
-    )
+    web_tool = next((tool for tool in master_response.tools_used if tool.name == "run_web_agent"), None)
 
     return {
         "answer": master_response.answer,
