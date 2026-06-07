@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 import threading
 import time
 import uuid
@@ -31,7 +32,11 @@ MCP_TOOL_RETRIES = 1
 MCP_TOOL_RETRY_DELAY_SECONDS = 0.3
 
 # Required global MCP subprocess parameters.
-server_params = StdioServerParameters(command="python", args=["mcp_server.py"])
+server_params = StdioServerParameters(
+    command=sys.executable,
+    args=["mcp_server.py"],
+    env=os.environ.copy(),
+)
 
 
 @asynccontextmanager
