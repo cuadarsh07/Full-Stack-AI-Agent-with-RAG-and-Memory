@@ -1,40 +1,52 @@
+import asyncio
 import json
 import os
 import re
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Literal, Optional, Type
+from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Type
 
-import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from groq import Groq
-from langchain_community.vectorstores import Chroma
-from langchain_core.embeddings import Embeddings
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-from tavily import TavilyClient
 
 load_dotenv()
 
 MODEL_NAME = "llama-3.3-70b-versatile"
-EMBEDDING_API_URL = (
-    "https://router.huggingface.co/hf-inference/models/"
-    "sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
-)
 MAX_AGENT_ITERATIONS = 5
-DEFAULT_WEB_RESULTS = 3
-DEFAULT_RESUME_RESULTS = 3
 ESCALATION_PREFIX = "Escalation:"
 SMALL_TALK_MAX_LENGTH = 120
 MAX_TOOL_RESULT_CHARS = 2500
 AGENT_REQUEST_RETRIES = 2
 AGENT_RETRY_DELAY_SECONDS = 2
 AGENT_LOOP_DELAY_SECONDS = 1
+MCP_TOOL_RETRIES = 1
+MCP_TOOL_RETRY_DELAY_SECONDS = 0.3
 
-app = FastAPI()
+# Required global MCP subprocess parameters.
+server_params = StdioServerParameters(command="python", args=["mcp_server.py"])
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic: connect with pure async context managers.
+    async with stdio_client(server_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            app.state.mcp_session = session
+            print("Successfully connected to MCP Server via clean async lifespan!")
+            yield
+    # Shutdown handled automatically by context manager exits.
+
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -45,11 +57,7 @@ app.add_middleware(
 )
 
 groq_api_key = os.environ.get("GROQ_API_KEY")
-tavily_api_key = os.environ.get("TAVILY_API_KEY")
-hf_token = os.environ.get("HF_TOKEN")
-
 client = Groq(api_key=groq_api_key) if groq_api_key else None
-tavily_client = TavilyClient(api_key=tavily_api_key) if tavily_api_key else None
 
 SESSION_STORE: Dict[str, Dict[str, Any]] = {}
 SESSION_LOCK = threading.Lock()
@@ -57,47 +65,6 @@ SESSION_LOCK = threading.Lock()
 
 class StrictBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
-
-class BulletproofHFEmbeddings(Embeddings):
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        if not hf_token:
-            raise RuntimeError("HF_TOKEN is not configured.")
-
-        headers = {"Authorization": f"Bearer {hf_token}"}
-        payload = {"inputs": texts, "options": {"wait_for_model": True}}
-        last_error = "Unknown error"
-
-        for attempt in range(3):
-            print("Sending request to Hugging Face...")
-            response = requests.post(EMBEDDING_API_URL, headers=headers, json=payload, timeout=60)
-
-            try:
-                result = response.json()
-            except ValueError:
-                result = None
-
-            if isinstance(result, list):
-                return result
-
-            if isinstance(result, dict):
-                last_error = result.get("error") or result.get("message") or json.dumps(result)
-            else:
-                last_error = response.text[:500] or f"HTTP {response.status_code}"
-
-            if attempt < 2:
-                print(f"HF Error Detected: {last_error}. Retrying in 5 seconds...")
-                time.sleep(5)
-
-        raise RuntimeError(f"Hugging Face embeddings request failed: {last_error}")
-
-    def embed_query(self, text: str) -> List[float]:
-        return self.embed_documents([text])[0]
-
-
-print("Loading Vector Database...")
-embedding_model = BulletproofHFEmbeddings()
-db = Chroma(persist_directory="./my_vector_db", embedding_function=embedding_model)
 
 
 class SummaryRequest(StrictBaseModel):
@@ -120,22 +87,6 @@ class MessageItem(StrictBaseModel):
 
 class ChatHistoryRequest(StrictBaseModel):
     messages: List[MessageItem] = Field(min_length=1)
-
-
-class SearchLiveWebInput(StrictBaseModel):
-    query: str = Field(
-        min_length=2,
-        max_length=300,
-        description="A precise web search query for current or live information.",
-    )
-
-
-class SearchResumeDatabaseInput(StrictBaseModel):
-    query: str = Field(
-        min_length=2,
-        max_length=300,
-        description="A semantic search query for finding information in the resume database.",
-    )
 
 
 class RunResumeAgentInput(StrictBaseModel):
@@ -213,7 +164,7 @@ class ToolSpec:
     label: str
     description: str
     input_model: Type[StrictBaseModel]
-    executor: Callable[[StrictBaseModel], ToolExecutionPayload]
+    executor: Callable[[StrictBaseModel, ClientSession], Awaitable[ToolExecutionPayload]]
 
 
 SMALL_TALK_PATTERNS = {
@@ -309,75 +260,64 @@ def truncate_text(value: Any, limit: int = MAX_TOOL_RESULT_CHARS) -> str:
     return f"{text[: limit - 3].rstrip()}..."
 
 
-def search_live_web_executor(tool_input: SearchLiveWebInput) -> ToolExecutionPayload:
-    if tavily_client is None:
+def parse_mcp_payload(raw_payload: str, expected_tool_name: str, query: str) -> ToolExecutionPayload:
+    try:
+        parsed = json.loads(raw_payload)
+    except json.JSONDecodeError as exc:
         return build_tool_error(
-            tool_name="search_live_web",
-            query=tool_input.query,
-            error_type="configuration_error",
-            message="TAVILY_API_KEY is not configured.",
+            tool_name=expected_tool_name,
+            query=query,
+            error_type="invalid_payload",
+            message=f"MCP tool returned non-JSON payload: {exc}. Raw: {truncate_text(raw_payload)}",
         )
 
     try:
-        response = tavily_client.search(
-            query=tool_input.query,
-            search_depth="basic",
-            max_results=DEFAULT_WEB_RESULTS,
-        )
-        results = [
-            {
-                "url": result.get("url", ""),
-                "content": truncate_text(result.get("content", "")),
-            }
-            for result in response.get("results", [])
-        ]
-        return ToolExecutionPayload(
-            success=True,
-            tool_name="search_live_web",
-            query=tool_input.query,
-            results=results,
-        )
-    except Exception as exc:
+        payload = ToolExecutionPayload.model_validate(parsed)
+    except ValidationError as exc:
         return build_tool_error(
-            tool_name="search_live_web",
-            query=tool_input.query,
-            error_type="tool_execution_error",
-            message=f"Live web search failed: {exc}",
+            tool_name=expected_tool_name,
+            query=query,
+            error_type="invalid_payload",
+            message=f"MCP tool returned invalid schema: {exc.json()}",
         )
 
-
-def search_resume_database_executor(tool_input: SearchResumeDatabaseInput) -> ToolExecutionPayload:
-    try:
-        docs = db.similarity_search(tool_input.query, k=DEFAULT_RESUME_RESULTS)
-        results = []
-        for rank, doc in enumerate(docs, start=1):
-            metadata = doc.metadata or {}
-            results.append(
-                {
-                    "rank": rank,
-                    "content": truncate_text(doc.page_content),
-                    "source": metadata.get("source"),
-                    "page": metadata.get("page"),
-                }
-            )
-
-        return ToolExecutionPayload(
-            success=True,
-            tool_name="search_resume_database",
-            query=tool_input.query,
-            results=results,
-        )
-    except Exception as exc:
-        return build_tool_error(
-            tool_name="search_resume_database",
-            query=tool_input.query,
-            error_type="tool_execution_error",
-            message=f"Resume database search failed: {exc}",
-        )
+    return payload
 
 
-def run_resume_agent(query: str) -> ToolExecutionPayload:
-    tool_payload = search_resume_database_executor(SearchResumeDatabaseInput(query=query))
+async def call_mcp_tool_payload(tool_name: str, query: str, session: ClientSession) -> ToolExecutionPayload:
+    last_error: Optional[Exception] = None
+
+    for attempt in range(MCP_TOOL_RETRIES + 1):
+        try:
+            result = await session.call_tool(tool_name, arguments={"query": query})
+            text_chunks: List[str] = []
+            for content_item in getattr(result, "content", []) or []:
+                text_value = getattr(content_item, "text", None)
+                if isinstance(text_value, str) and text_value.strip():
+                    text_chunks.append(text_value)
+                elif hasattr(content_item, "model_dump_json"):
+                    text_chunks.append(content_item.model_dump_json())
+                else:
+                    text_chunks.append(str(content_item))
+
+            raw_response = "\n".join(text_chunks).strip() or str(result)
+            return parse_mcp_payload(raw_response, tool_name, query)
+        except Exception as exc:
+            last_error = exc
+            if attempt >= MCP_TOOL_RETRIES:
+                break
+            await asyncio.sleep(MCP_TOOL_RETRY_DELAY_SECONDS)
+
+    return build_tool_error(
+        tool_name=tool_name,
+        query=query,
+        error_type="mcp_client_error",
+        message=f"MCP call failed: {last_error}",
+    )
+
+
+async def run_resume_agent(query: str, session: ClientSession) -> ToolExecutionPayload:
+    tool_payload = await call_mcp_tool_payload("search_resume_database", query, session)
     if not tool_payload.success:
         if tool_payload.error is None:
             return build_tool_error(
@@ -445,8 +385,8 @@ def run_resume_agent(query: str) -> ToolExecutionPayload:
     )
 
 
-def run_web_agent(query: str) -> ToolExecutionPayload:
-    tool_payload = search_live_web_executor(SearchLiveWebInput(query=query))
+async def run_web_agent(query: str, session: ClientSession) -> ToolExecutionPayload:
+    tool_payload = await call_mcp_tool_payload("search_live_web", query, session)
     if not tool_payload.success:
         if tool_payload.error is None:
             return build_tool_error(
@@ -512,12 +452,14 @@ def run_web_agent(query: str) -> ToolExecutionPayload:
     )
 
 
-def run_resume_agent_executor(tool_input: RunResumeAgentInput) -> ToolExecutionPayload:
-    return run_resume_agent(tool_input.query)
+async def run_resume_agent_executor(
+    tool_input: RunResumeAgentInput, session: ClientSession
+) -> ToolExecutionPayload:
+    return await run_resume_agent(tool_input.query, session)
 
 
-def run_web_agent_executor(tool_input: RunWebAgentInput) -> ToolExecutionPayload:
-    return run_web_agent(tool_input.query)
+async def run_web_agent_executor(tool_input: RunWebAgentInput, session: ClientSession) -> ToolExecutionPayload:
+    return await run_web_agent(tool_input.query, session)
 
 
 TOOL_REGISTRY: Dict[str, ToolSpec] = {
@@ -602,7 +544,9 @@ def make_tool_usage_record(tool_name: str, payload: ToolExecutionPayload) -> Too
     )
 
 
-def execute_tool_call(tool_call: Any) -> tuple[ToolExecutionPayload, ToolUsageRecord]:
+async def execute_tool_call(
+    tool_call: Any, session: ClientSession
+) -> tuple[ToolExecutionPayload, ToolUsageRecord]:
     tool_name = tool_call.function.name
     raw_arguments = tool_call.function.arguments or "{}"
     tool_spec = TOOL_REGISTRY.get(tool_name)
@@ -645,7 +589,7 @@ def execute_tool_call(tool_call: Any) -> tuple[ToolExecutionPayload, ToolUsageRe
         )
         return payload, make_tool_usage_record(tool_name, payload)
 
-    payload = tool_spec.executor(validated_input)
+    payload = await tool_spec.executor(validated_input, session)
     return payload, make_tool_usage_record(tool_name, payload)
 
 
@@ -723,16 +667,17 @@ def request_agent_step(groq_client: Groq, llm_messages: List[Dict[str, Any]]) ->
     raise RuntimeError(f"Groq request failed after retries: {last_error}") from last_error
 
 
-def append_tool_results(
+async def append_tool_results(
     session_id: str,
     iteration: int,
     llm_messages: List[Dict[str, Any]],
     tool_calls: List[Any],
     tools_used: List[ToolUsageRecord],
     warnings: List[str],
+    session: ClientSession,
 ) -> None:
     for tool_call in tool_calls:
-        payload, usage_record = execute_tool_call(tool_call)
+        payload, usage_record = await execute_tool_call(tool_call, session)
         tools_used.append(usage_record)
 
         if not payload.success and payload.error:
@@ -757,7 +702,7 @@ def append_tool_results(
         )
 
 
-def run_master_agent(request: MasterChatRequest) -> MasterChatResponse:
+async def run_master_agent(request: MasterChatRequest, session: ClientSession) -> MasterChatResponse:
     session_id = get_or_create_session_id(request.session_id)
     visible_messages = hydrate_visible_messages(session_id, request.messages)
     llm_messages: List[Dict[str, Any]] = as_groq_messages(visible_messages)
@@ -835,8 +780,8 @@ def run_master_agent(request: MasterChatRequest) -> MasterChatResponse:
             )
 
         llm_messages.append(format_assistant_tool_message(response_message))
-        append_tool_results(session_id, iteration, llm_messages, tool_calls, tools_used, warnings)
-        time.sleep(AGENT_LOOP_DELAY_SECONDS)
+        await append_tool_results(session_id, iteration, llm_messages, tool_calls, tools_used, warnings, session)
+        await asyncio.sleep(AGENT_LOOP_DELAY_SECONDS)
 
     answer = (
         f"{ESCALATION_PREFIX} I reached the maximum number of tool steps for this request and "
@@ -880,8 +825,9 @@ def summarize_text(request: SummaryRequest):
 
 
 @app.post("/ask")
-def ask_document(request: QuestionRequest):
-    tool_result = search_resume_database_executor(SearchResumeDatabaseInput(query=request.question))
+async def ask_document(http_request: Request, request: QuestionRequest):
+    session: ClientSession = http_request.app.state.mcp_session
+    tool_result = await call_mcp_tool_payload("search_resume_database", request.question, session)
     docs = tool_result.results
     context_text = "\n\n".join([doc.get("content", "") for doc in docs])
 
@@ -904,13 +850,17 @@ def ask_document(request: QuestionRequest):
     return {
         "answer": chat_completion.choices[0].message.content,
         "sources_used": [doc.get("content", "") for doc in docs],
+        "tool_success": tool_result.success,
+        "tool_error": tool_result.error.model_dump() if tool_result.error else None,
     }
 
 
 @app.post("/agent")
-def run_agent(request: AgentRequest):
-    master_response = run_master_agent(
-        MasterChatRequest(messages=[MessageItem(role="user", content=request.question)])
+async def run_agent(http_request: Request, request: AgentRequest):
+    session: ClientSession = http_request.app.state.mcp_session
+    master_response = await run_master_agent(
+        MasterChatRequest(messages=[MessageItem(role="user", content=request.question)]),
+        session,
     )
 
     web_tool = next((tool for tool in master_response.tools_used if tool.name == "run_web_agent"), None)
@@ -941,8 +891,9 @@ def run_chat(request: ChatHistoryRequest):
 
 
 @app.post("/master-chat", response_model=MasterChatResponse)
-def master_chat(request: MasterChatRequest) -> MasterChatResponse:
-    return run_master_agent(request)
+async def master_chat(http_request: Request, request: MasterChatRequest) -> MasterChatResponse:
+    session: ClientSession = http_request.app.state.mcp_session
+    return await run_master_agent(request, session)
 
 
 @app.post("/feedback")

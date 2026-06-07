@@ -1,25 +1,76 @@
 # Logs
-logs
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+
+# Environment variables / secrets
 .env
-node_modules
-dist
-dist-ssr
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Poetry
+# Keep poetry.lock committed for reproducible installs
+# poetry.lock
+
+# Python build / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Test / cache files
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# FastAPI / local runtime
+*.sqlite
+*.sqlite3
+*.db
+
+# Chroma / vector database files
+my_vector_db/
+chroma.sqlite3
+data_level0.bin
+length.bin
+*.parquet
+
+# Node / frontend
+node_modules/
+dist-ssr/
 *.local
-poetry.lock
 
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
-.idea
+.idea/
 .DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# OS files
+Thumbs.db
+desktop.ini

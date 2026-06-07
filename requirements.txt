@@ -7,3 +7,4 @@ chromadb
 tavily-python
 pydantic
 requests
+mcp
