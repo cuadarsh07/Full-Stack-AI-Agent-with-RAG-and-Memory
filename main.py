@@ -152,6 +152,7 @@ class MasterChatResponse(StrictBaseModel):
     iterations: int
     escalated: bool = False
     warnings: List[str] = Field(default_factory=list)
+    telemetry: Dict[str, Any] = Field(default_factory=dict)
 
 
 class FeedbackRequest(StrictBaseModel):
@@ -170,6 +171,37 @@ class ToolSpec:
     description: str
     input_model: Type[StrictBaseModel]
     executor: Callable[[StrictBaseModel, ClientSession], Awaitable[ToolExecutionPayload]]
+
+
+@dataclass
+class TelemetryState:
+    started_at: float
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    agent_traces: List[Dict[str, Any]] = None
+
+    def __post_init__(self) -> None:
+        if self.agent_traces is None:
+            self.agent_traces = []
+
+    def add_usage(self, prompt_tokens: int, completion_tokens: int) -> None:
+        self.prompt_tokens += max(prompt_tokens, 0)
+        self.completion_tokens += max(completion_tokens, 0)
+
+    def add_agent_trace(self, agent: str, latency_ms: float) -> None:
+        self.agent_traces.append({"agent": agent, "latency_ms": round(latency_ms, 3)})
+
+    def build_payload(self, total_latency_ms: float) -> Dict[str, Any]:
+        total_tokens = self.prompt_tokens + self.completion_tokens
+        return {
+            "total_latency_ms": round(total_latency_ms, 3),
+            "total_tokens": {
+                "prompt_tokens": self.prompt_tokens,
+                "completion_tokens": self.completion_tokens,
+                "total_tokens": total_tokens,
+            },
+            "agent_traces": self.agent_traces,
+        }
 
 
 SMALL_TALK_PATTERNS = {
@@ -196,6 +228,16 @@ def get_groq_client() -> Groq:
     if client is None:
         raise RuntimeError("GROQ_API_KEY is not configured.")
     return client
+
+
+def extract_groq_usage(response: Any) -> tuple[int, int]:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return 0, 0
+
+    prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+    completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+    return prompt_tokens, completion_tokens
 
 
 def normalize_small_talk_text(text: str) -> str:
@@ -321,9 +363,16 @@ async def call_mcp_tool_payload(tool_name: str, query: str, session: ClientSessi
     )
 
 
-async def run_resume_agent(query: str, session: ClientSession) -> ToolExecutionPayload:
+async def run_resume_agent(
+    query: str,
+    session: ClientSession,
+    telemetry: Optional[TelemetryState] = None,
+) -> ToolExecutionPayload:
+    started_at = time.perf_counter()
     tool_payload = await call_mcp_tool_payload("search_resume_database", query, session)
     if not tool_payload.success:
+        if telemetry is not None:
+            telemetry.add_agent_trace("resume_agent", (time.perf_counter() - started_at) * 1000)
         if tool_payload.error is None:
             return build_tool_error(
                 tool_name="run_resume_agent",
@@ -369,8 +418,13 @@ async def run_resume_agent(query: str, session: ClientSession) -> ToolExecutionP
                 },
             ],
         )
+        if telemetry is not None:
+            prompt_tokens, completion_tokens = extract_groq_usage(specialist_response)
+            telemetry.add_usage(prompt_tokens, completion_tokens)
         summary = (specialist_response.choices[0].message.content or "").strip()
     except Exception as exc:
+        if telemetry is not None:
+            telemetry.add_agent_trace("resume_agent", (time.perf_counter() - started_at) * 1000)
         return build_tool_error(
             tool_name="run_resume_agent",
             query=query,
@@ -381,6 +435,9 @@ async def run_resume_agent(query: str, session: ClientSession) -> ToolExecutionP
     if not summary:
         summary = "The resume specialist could not produce a grounded answer from the retrieved data."
 
+    if telemetry is not None:
+        telemetry.add_agent_trace("resume_agent", (time.perf_counter() - started_at) * 1000)
+
     return ToolExecutionPayload(
         success=True,
         tool_name="run_resume_agent",
@@ -390,9 +447,16 @@ async def run_resume_agent(query: str, session: ClientSession) -> ToolExecutionP
     )
 
 
-async def run_web_agent(query: str, session: ClientSession) -> ToolExecutionPayload:
+async def run_web_agent(
+    query: str,
+    session: ClientSession,
+    telemetry: Optional[TelemetryState] = None,
+) -> ToolExecutionPayload:
+    started_at = time.perf_counter()
     tool_payload = await call_mcp_tool_payload("search_live_web", query, session)
     if not tool_payload.success:
+        if telemetry is not None:
+            telemetry.add_agent_trace("web_agent", (time.perf_counter() - started_at) * 1000)
         if tool_payload.error is None:
             return build_tool_error(
                 tool_name="run_web_agent",
@@ -436,8 +500,13 @@ async def run_web_agent(query: str, session: ClientSession) -> ToolExecutionPayl
                 },
             ],
         )
+        if telemetry is not None:
+            prompt_tokens, completion_tokens = extract_groq_usage(specialist_response)
+            telemetry.add_usage(prompt_tokens, completion_tokens)
         summary = (specialist_response.choices[0].message.content or "").strip()
     except Exception as exc:
+        if telemetry is not None:
+            telemetry.add_agent_trace("web_agent", (time.perf_counter() - started_at) * 1000)
         return build_tool_error(
             tool_name="run_web_agent",
             query=query,
@@ -447,6 +516,9 @@ async def run_web_agent(query: str, session: ClientSession) -> ToolExecutionPayl
 
     if not summary:
         summary = "The web specialist could not produce a grounded answer from the retrieved sources."
+
+    if telemetry is not None:
+        telemetry.add_agent_trace("web_agent", (time.perf_counter() - started_at) * 1000)
 
     return ToolExecutionPayload(
         success=True,
@@ -458,13 +530,19 @@ async def run_web_agent(query: str, session: ClientSession) -> ToolExecutionPayl
 
 
 async def run_resume_agent_executor(
-    tool_input: RunResumeAgentInput, session: ClientSession
+    tool_input: RunResumeAgentInput,
+    session: ClientSession,
+    telemetry: Optional[TelemetryState] = None,
 ) -> ToolExecutionPayload:
-    return await run_resume_agent(tool_input.query, session)
+    return await run_resume_agent(tool_input.query, session, telemetry)
 
 
-async def run_web_agent_executor(tool_input: RunWebAgentInput, session: ClientSession) -> ToolExecutionPayload:
-    return await run_web_agent(tool_input.query, session)
+async def run_web_agent_executor(
+    tool_input: RunWebAgentInput,
+    session: ClientSession,
+    telemetry: Optional[TelemetryState] = None,
+) -> ToolExecutionPayload:
+    return await run_web_agent(tool_input.query, session, telemetry)
 
 
 TOOL_REGISTRY: Dict[str, ToolSpec] = {
@@ -550,7 +628,9 @@ def make_tool_usage_record(tool_name: str, payload: ToolExecutionPayload) -> Too
 
 
 async def execute_tool_call(
-    tool_call: Any, session: ClientSession
+    tool_call: Any,
+    session: ClientSession,
+    telemetry: Optional[TelemetryState] = None,
 ) -> tuple[ToolExecutionPayload, ToolUsageRecord]:
     tool_name = tool_call.function.name
     raw_arguments = tool_call.function.arguments or "{}"
@@ -594,7 +674,7 @@ async def execute_tool_call(
         )
         return payload, make_tool_usage_record(tool_name, payload)
 
-    payload = await tool_spec.executor(validated_input, session)
+    payload = await tool_spec.executor(validated_input, session, telemetry)
     return payload, make_tool_usage_record(tool_name, payload)
 
 
@@ -625,6 +705,7 @@ def finalize_master_chat_response(
     iterations: int,
     warnings: List[str],
     escalated: bool,
+    telemetry: Optional[Dict[str, Any]] = None,
     event_name: str = "master_chat_completed",
     extra_log_fields: Optional[Dict[str, Any]] = None,
 ) -> MasterChatResponse:
@@ -638,9 +719,23 @@ def finalize_master_chat_response(
             "iterations": iterations,
             "tools_used": [tool.model_dump() for tool in tools_used],
             "escalated": escalated,
+            "telemetry": telemetry or {},
             **(extra_log_fields or {}),
         },
     )
+
+    print(
+        json.dumps(
+            {
+                "event": "chat_transaction_telemetry",
+                "session_id": session_id,
+                "message_id": final_message_id,
+                "telemetry": telemetry or {},
+            },
+            indent=2,
+        )
+    )
+
     return MasterChatResponse(
         session_id=session_id,
         message_id=final_message_id,
@@ -649,6 +744,7 @@ def finalize_master_chat_response(
         iterations=iterations,
         escalated=escalated,
         warnings=warnings,
+        telemetry=telemetry or {},
     )
 
 
@@ -680,9 +776,10 @@ async def append_tool_results(
     tools_used: List[ToolUsageRecord],
     warnings: List[str],
     session: ClientSession,
+    telemetry: Optional[TelemetryState] = None,
 ) -> None:
     for tool_call in tool_calls:
-        payload, usage_record = await execute_tool_call(tool_call, session)
+        payload, usage_record = await execute_tool_call(tool_call, session, telemetry)
         tools_used.append(usage_record)
 
         if not payload.success and payload.error:
@@ -708,6 +805,7 @@ async def append_tool_results(
 
 
 async def run_master_agent(request: MasterChatRequest, session: ClientSession) -> MasterChatResponse:
+    telemetry = TelemetryState(started_at=time.perf_counter())
     session_id = get_or_create_session_id(request.session_id)
     visible_messages = hydrate_visible_messages(session_id, request.messages)
     llm_messages: List[Dict[str, Any]] = as_groq_messages(visible_messages)
@@ -717,6 +815,7 @@ async def run_master_agent(request: MasterChatRequest, session: ClientSession) -
     small_talk_reply = build_small_talk_reply(visible_messages[-1].content)
 
     if small_talk_reply is not None:
+        total_latency_ms = (time.perf_counter() - telemetry.started_at) * 1000
         return finalize_master_chat_response(
             session_id=session_id,
             final_message_id=final_message_id,
@@ -726,6 +825,7 @@ async def run_master_agent(request: MasterChatRequest, session: ClientSession) -
             iterations=0,
             warnings=warnings,
             escalated=False,
+            telemetry=telemetry.build_payload(total_latency_ms),
             event_name="master_chat_small_talk",
         )
 
@@ -733,6 +833,7 @@ async def run_master_agent(request: MasterChatRequest, session: ClientSession) -
         groq_client = get_groq_client()
     except RuntimeError as exc:
         answer = f"{ESCALATION_PREFIX} {exc}"
+        total_latency_ms = (time.perf_counter() - telemetry.started_at) * 1000
         return finalize_master_chat_response(
             session_id=session_id,
             final_message_id=final_message_id,
@@ -742,14 +843,18 @@ async def run_master_agent(request: MasterChatRequest, session: ClientSession) -
             iterations=0,
             warnings=[str(exc)],
             escalated=True,
+            telemetry=telemetry.build_payload(total_latency_ms),
         )
 
     for iteration in range(1, MAX_AGENT_ITERATIONS + 1):
         try:
             response = request_agent_step(groq_client, llm_messages)
+            prompt_tokens, completion_tokens = extract_groq_usage(response)
+            telemetry.add_usage(prompt_tokens, completion_tokens)
         except Exception as exc:
             answer = f"{ESCALATION_PREFIX} I could not complete the request because the model call failed."
             warnings.append(f"Groq request failed: {exc}")
+            total_latency_ms = (time.perf_counter() - telemetry.started_at) * 1000
             return finalize_master_chat_response(
                 session_id=session_id,
                 final_message_id=final_message_id,
@@ -759,6 +864,7 @@ async def run_master_agent(request: MasterChatRequest, session: ClientSession) -
                 iterations=iteration,
                 warnings=warnings,
                 escalated=True,
+                telemetry=telemetry.build_payload(total_latency_ms),
                 event_name="master_chat_failed",
                 extra_log_fields={"error": str(exc)},
             )
@@ -773,6 +879,7 @@ async def run_master_agent(request: MasterChatRequest, session: ClientSession) -
                 warnings.append("The model returned an empty final answer.")
 
             escalated = answer.startswith(ESCALATION_PREFIX)
+            total_latency_ms = (time.perf_counter() - telemetry.started_at) * 1000
             return finalize_master_chat_response(
                 session_id=session_id,
                 final_message_id=final_message_id,
@@ -782,10 +889,20 @@ async def run_master_agent(request: MasterChatRequest, session: ClientSession) -
                 iterations=iteration,
                 warnings=warnings,
                 escalated=escalated,
+                telemetry=telemetry.build_payload(total_latency_ms),
             )
 
         llm_messages.append(format_assistant_tool_message(response_message))
-        await append_tool_results(session_id, iteration, llm_messages, tool_calls, tools_used, warnings, session)
+        await append_tool_results(
+            session_id,
+            iteration,
+            llm_messages,
+            tool_calls,
+            tools_used,
+            warnings,
+            session,
+            telemetry,
+        )
         await asyncio.sleep(AGENT_LOOP_DELAY_SECONDS)
 
     answer = (
@@ -793,6 +910,7 @@ async def run_master_agent(request: MasterChatRequest, session: ClientSession) -
         "do not yet have enough verified information to answer confidently."
     )
     warnings.append("The agent loop hit the iteration limit.")
+    total_latency_ms = (time.perf_counter() - telemetry.started_at) * 1000
     return finalize_master_chat_response(
         session_id=session_id,
         final_message_id=final_message_id,
@@ -802,6 +920,7 @@ async def run_master_agent(request: MasterChatRequest, session: ClientSession) -
         iterations=MAX_AGENT_ITERATIONS,
         warnings=warnings,
         escalated=True,
+        telemetry=telemetry.build_payload(total_latency_ms),
         extra_log_fields={"warning": "iteration_limit"},
     )
 
