@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 load_dotenv()
 
 MODEL_NAME = "llama-3.3-70b-versatile"
+RAG_REWRITE_MODEL_NAME = "llama3-8b-8192"
 MAX_AGENT_ITERATIONS = 5
 ESCALATION_PREFIX = "Escalation:"
 SMALL_TALK_MAX_LENGTH = 120
@@ -133,6 +134,20 @@ class ToolUsageRecord(StrictBaseModel):
     error: Optional[str] = None
 
 
+class SupervisorResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    final_answer: str = Field(
+        min_length=1,
+        description="The actual conversational response to the user, formatted in clean Markdown.",
+    )
+    suggested_follow_ups: List[str] = Field(
+        min_length=2,
+        max_length=3,
+        description="A list of 2-3 natural follow-up questions the user might want to ask next.",
+    )
+
+
 class MasterChatRequest(StrictBaseModel):
     session_id: Optional[str] = None
     messages: List[MessageItem] = Field(min_length=1)
@@ -148,6 +163,7 @@ class MasterChatResponse(StrictBaseModel):
     session_id: str
     message_id: str
     answer: str
+    structured_response: SupervisorResponse
     tools_used: List[ToolUsageRecord] = Field(default_factory=list)
     iterations: int
     escalated: bool = False
@@ -238,6 +254,40 @@ def extract_groq_usage(response: Any) -> tuple[int, int]:
     prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
     completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
     return prompt_tokens, completion_tokens
+
+
+def default_follow_ups() -> List[str]:
+    return [
+        "What parts of Adarsh's resume are most relevant to this?",
+        "Can you compare this with the latest market context?",
+    ]
+
+
+def make_supervisor_response(final_answer: str, suggested_follow_ups: Optional[List[str]] = None) -> SupervisorResponse:
+    clean_answer = final_answer.strip() or (
+        f"{ESCALATION_PREFIX} I do not have enough verified information to answer that safely."
+    )
+    clean_follow_ups = [
+        follow_up.strip()
+        for follow_up in (suggested_follow_ups or default_follow_ups())
+        if follow_up and follow_up.strip()
+    ]
+
+    while len(clean_follow_ups) < 2:
+        clean_follow_ups.append(default_follow_ups()[len(clean_follow_ups)])
+
+    return SupervisorResponse(
+        final_answer=clean_answer,
+        suggested_follow_ups=clean_follow_ups[:3],
+    )
+
+
+def parse_supervisor_response(raw_content: str) -> SupervisorResponse:
+    try:
+        parsed = json.loads(raw_content)
+        return SupervisorResponse.model_validate(parsed)
+    except (json.JSONDecodeError, ValidationError, TypeError) as exc:
+        raise ValueError(f"Supervisor response did not match the required JSON schema: {exc}") from exc
 
 
 def normalize_small_talk_text(text: str) -> str:
@@ -363,13 +413,50 @@ async def call_mcp_tool_payload(tool_name: str, query: str, session: ClientSessi
     )
 
 
+def sanitize_rewritten_query(raw_query: str, fallback_query: str) -> str:
+    rewritten_query = re.sub(r"\s+", " ", raw_query.strip().strip("\"'`")).strip()
+    if not rewritten_query:
+        return fallback_query
+
+    return rewritten_query[:120]
+
+
+def rewrite_resume_search_query(query: str, telemetry: Optional[TelemetryState] = None) -> str:
+    try:
+        rewrite_response = get_groq_client().chat.completions.create(
+            model=RAG_REWRITE_MODEL_NAME,
+            temperature=0,
+            max_tokens=32,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a RAG Search Optimizer. Take the user's input query and rewrite it "
+                        "into a short string of 3-5 high-relevance technical keywords optimized for "
+                        "vector database semantic search. Return ONLY the search terms, nothing else."
+                    ),
+                },
+                {"role": "user", "content": query},
+            ],
+        )
+        if telemetry is not None:
+            prompt_tokens, completion_tokens = extract_groq_usage(rewrite_response)
+            telemetry.add_usage(prompt_tokens, completion_tokens)
+
+        raw_rewritten_query = rewrite_response.choices[0].message.content or ""
+        return sanitize_rewritten_query(raw_rewritten_query, query)
+    except Exception:
+        return query
+
+
 async def run_resume_agent(
     query: str,
     session: ClientSession,
     telemetry: Optional[TelemetryState] = None,
 ) -> ToolExecutionPayload:
     started_at = time.perf_counter()
-    tool_payload = await call_mcp_tool_payload("search_resume_database", query, session)
+    rewritten_query = rewrite_resume_search_query(query, telemetry)
+    tool_payload = await call_mcp_tool_payload("search_resume_database", rewritten_query, session)
     if not tool_payload.success:
         if telemetry is not None:
             telemetry.add_agent_trace("resume_agent", (time.perf_counter() - started_at) * 1000)
@@ -581,6 +668,12 @@ Rules:
 7. If you still do not have enough verified information after using workers, start your answer with '{ESCALATION_PREFIX}' and clearly state what is missing.
 8. Give the final answer directly and concisely. Do not narrate your internal chain of thought.
 9. Prefer grounded answers over broad speculation.
+10. When producing a final response for the user, return ONLY a valid JSON object matching this exact shape:
+{{
+  "final_answer": "Clean Markdown answer for the user",
+  "suggested_follow_ups": ["Natural follow-up question 1", "Natural follow-up question 2"]
+}}
+11. suggested_follow_ups must contain 2-3 concise, natural questions. Do not include any keys outside this JSON structure.
 """
 
 
@@ -705,10 +798,13 @@ def finalize_master_chat_response(
     iterations: int,
     warnings: List[str],
     escalated: bool,
+    structured_response: Optional[SupervisorResponse] = None,
     telemetry: Optional[Dict[str, Any]] = None,
     event_name: str = "master_chat_completed",
     extra_log_fields: Optional[Dict[str, Any]] = None,
 ) -> MasterChatResponse:
+    response_payload = structured_response or make_supervisor_response(answer)
+    answer = response_payload.final_answer
     assistant_message = MessageItem(role="assistant", content=answer)
     store_session_messages(session_id, [*visible_messages, assistant_message])
     log_event(
@@ -716,6 +812,7 @@ def finalize_master_chat_response(
         {
             "session_id": session_id,
             "message_id": final_message_id,
+            "structured_response": response_payload.model_dump(),
             "iterations": iterations,
             "tools_used": [tool.model_dump() for tool in tools_used],
             "escalated": escalated,
@@ -740,6 +837,7 @@ def finalize_master_chat_response(
         session_id=session_id,
         message_id=final_message_id,
         answer=answer,
+        structured_response=response_payload,
         tools_used=tools_used,
         iterations=iterations,
         escalated=escalated,
@@ -766,6 +864,54 @@ def request_agent_step(groq_client: Groq, llm_messages: List[Dict[str, Any]]) ->
             time.sleep(AGENT_RETRY_DELAY_SECONDS)
 
     raise RuntimeError(f"Groq request failed after retries: {last_error}") from last_error
+
+
+def request_structured_supervisor_response(
+    groq_client: Groq,
+    llm_messages: List[Dict[str, Any]],
+    draft_answer: Optional[str] = None,
+) -> Any:
+    final_messages: List[Dict[str, Any]] = [
+        {
+            "role": "system",
+            "content": (
+                f"{build_master_system_prompt()}\n"
+                "You are now producing the final response. Do not mention tools unless the result is relevant. "
+                "Return ONLY the required JSON object."
+            ),
+        },
+        *llm_messages,
+    ]
+
+    if draft_answer:
+        final_messages.append(
+            {
+                "role": "assistant",
+                "content": draft_answer,
+            }
+        )
+        final_messages.append(
+            {
+                "role": "user",
+                "content": "Convert the draft answer into the required JSON object without adding unsupported claims.",
+            }
+        )
+
+    last_error: Optional[Exception] = None
+    for attempt in range(AGENT_REQUEST_RETRIES + 1):
+        try:
+            return groq_client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=final_messages,
+                response_format={"type": "json_object"},
+            )
+        except Exception as exc:
+            last_error = exc
+            if attempt >= AGENT_REQUEST_RETRIES:
+                break
+            time.sleep(AGENT_RETRY_DELAY_SECONDS)
+
+    raise RuntimeError(f"Groq structured response failed after retries: {last_error}") from last_error
 
 
 async def append_tool_results(
@@ -873,10 +1019,32 @@ async def run_master_agent(request: MasterChatRequest, session: ClientSession) -
         tool_calls = response_message.tool_calls or []
 
         if not tool_calls:
-            answer = (response_message.content or "").strip()
-            if not answer:
+            draft_answer = (response_message.content or "").strip()
+            try:
+                structured_response_call = request_structured_supervisor_response(
+                    groq_client,
+                    llm_messages,
+                    draft_answer=draft_answer or None,
+                )
+                prompt_tokens, completion_tokens = extract_groq_usage(structured_response_call)
+                telemetry.add_usage(prompt_tokens, completion_tokens)
+                raw_answer = (structured_response_call.choices[0].message.content or "").strip()
+            except Exception as exc:
+                raw_answer = draft_answer
+                warnings.append(f"Structured supervisor response failed: {exc}")
+
+            if not raw_answer:
                 answer = f"{ESCALATION_PREFIX} I do not have enough verified information to answer that safely."
                 warnings.append("The model returned an empty final answer.")
+                supervisor_response = make_supervisor_response(answer)
+            else:
+                try:
+                    supervisor_response = parse_supervisor_response(raw_answer)
+                    answer = supervisor_response.final_answer
+                except ValueError as exc:
+                    answer = raw_answer
+                    supervisor_response = make_supervisor_response(answer)
+                    warnings.append(str(exc))
 
             escalated = answer.startswith(ESCALATION_PREFIX)
             total_latency_ms = (time.perf_counter() - telemetry.started_at) * 1000
@@ -889,6 +1057,7 @@ async def run_master_agent(request: MasterChatRequest, session: ClientSession) -
                 iterations=iteration,
                 warnings=warnings,
                 escalated=escalated,
+                structured_response=supervisor_response,
                 telemetry=telemetry.build_payload(total_latency_ms),
             )
 

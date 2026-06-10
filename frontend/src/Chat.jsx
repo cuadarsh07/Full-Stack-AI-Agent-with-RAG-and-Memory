@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import PropTypes from 'prop-types'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -102,6 +102,38 @@ function sanitizeAssistantContent(content) {
   return sanitized || FALLBACK_ASSISTANT_REPLY
 }
 
+function normalizeSuggestedFollowUps(value) {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value
+    .filter((item) => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 3)
+}
+
+function normalizeStructuredResponse(value, fallbackContent = '') {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const finalAnswer =
+    typeof value.final_answer === 'string'
+      ? sanitizeAssistantContent(value.final_answer)
+      : sanitizeAssistantContent(fallbackContent)
+
+  return {
+    final_answer: finalAnswer,
+    suggested_follow_ups: normalizeSuggestedFollowUps(value.suggested_follow_ups),
+  }
+}
+
+function getAssistantMessageContent(message) {
+  return message?.structured_response?.final_answer || message?.content || FALLBACK_ASSISTANT_REPLY
+}
+
 function normalizeToolsUsed(value) {
   if (!Array.isArray(value)) {
     return []
@@ -138,16 +170,26 @@ function normalizeStoredMessages(value) {
 
   return value
     .filter((message) => message && typeof message.content === 'string' && typeof message.role === 'string')
-    .map((message) => ({
-      id: typeof message.id === 'string' ? message.id : makeClientId(),
-      role: message.role,
-      content:
-        message.role === 'assistant' ? sanitizeAssistantContent(message.content) : message.content,
-      toolsUsed: normalizeToolsUsed(message.toolsUsed),
-      escalated: Boolean(message.escalated),
-      warnings: Array.isArray(message.warnings) ? message.warnings.filter(Boolean) : [],
-      feedback: typeof message.feedback === 'boolean' ? message.feedback : null,
-    }))
+    .map((message) => {
+      const structuredResponse =
+        message.role === 'assistant'
+          ? normalizeStructuredResponse(message.structured_response, message.content)
+          : null
+
+      return {
+        id: typeof message.id === 'string' ? message.id : makeClientId(),
+        role: message.role,
+        content:
+          message.role === 'assistant'
+            ? structuredResponse?.final_answer ?? sanitizeAssistantContent(message.content)
+            : message.content,
+        structured_response: structuredResponse,
+        toolsUsed: normalizeToolsUsed(message.toolsUsed),
+        escalated: Boolean(message.escalated),
+        warnings: Array.isArray(message.warnings) ? message.warnings.filter(Boolean) : [],
+        feedback: typeof message.feedback === 'boolean' ? message.feedback : null,
+      }
+    })
 }
 
 function loadStoredMessages() {
@@ -250,7 +292,7 @@ export default function Chat({ newChatEventName }) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isLoading])
 
-  const handleNewChat = () => {
+  const handleNewChat = useCallback(() => {
     const nextSessionId = makeSessionId()
     setMessages([])
     setInput('')
@@ -259,7 +301,7 @@ export default function Chat({ newChatEventName }) {
     setSessionId(nextSessionId)
     localStorage.removeItem(MESSAGE_STORAGE_KEY)
     requestAnimationFrame(() => textareaRef.current?.focus())
-  }
+  }, [])
 
   const handlePromptSelection = (prompt) => {
     setInput(prompt)
@@ -282,9 +324,8 @@ export default function Chat({ newChatEventName }) {
     }
   }, [newChatEventName, handleNewChat])
 
-  const handleSendMessage = async (event) => {
-    event.preventDefault()
-    const trimmedInput = input.trim()
+  const sendMessage = async (messageText) => {
+    const trimmedInput = String(messageText ?? '').trim()
     if (!trimmedInput || isLoading) {
       return
     }
@@ -325,12 +366,14 @@ export default function Chat({ newChatEventName }) {
 
       const data = await response.json()
       setSessionId(typeof data.session_id === 'string' ? data.session_id : sessionId)
+      const structuredResponse = normalizeStructuredResponse(data.structured_response, data.answer)
       setMessages((previousMessages) => [
         ...previousMessages,
         {
           id: typeof data.message_id === 'string' ? data.message_id : makeClientId('assistant'),
           role: 'assistant',
-          content: sanitizeAssistantContent(data.answer),
+          content: structuredResponse?.final_answer ?? sanitizeAssistantContent(data.answer),
+          structured_response: structuredResponse,
           toolsUsed: normalizeToolsUsed(data.tools_used),
           escalated: Boolean(data.escalated),
           warnings: Array.isArray(data.warnings) ? data.warnings.filter(Boolean) : [],
@@ -347,6 +390,11 @@ export default function Chat({ newChatEventName }) {
     } finally {
       setIsLoading(false)
     }
+  }
+
+  const handleSendMessage = async (event) => {
+    event.preventDefault()
+    await sendMessage(input)
   }
 
   const handleFeedback = async (messageId, thumbsUp, index) => {
@@ -371,7 +419,7 @@ export default function Chat({ newChatEventName }) {
           thumbs_up: thumbsUp,
           session_id: sessionId,
           user_message: previousUserMessage?.content ?? null,
-          assistant_message: targetMessage.content,
+          assistant_message: getAssistantMessageContent(targetMessage),
           tools_used: targetMessage.toolsUsed,
         }),
       })
@@ -454,6 +502,11 @@ export default function Chat({ newChatEventName }) {
               {messages.map((message, index) => {
                 const isAssistant = message.role === 'assistant'
                 const isFeedbackPending = Boolean(pendingFeedback[message.id])
+                const assistantContent = getAssistantMessageContent(message)
+                const suggestedFollowUps =
+                  isAssistant && Array.isArray(message.structured_response?.suggested_follow_ups)
+                    ? message.structured_response.suggested_follow_ups
+                    : []
 
                 return (
                   <div
@@ -476,7 +529,24 @@ export default function Chat({ newChatEventName }) {
                       {message.role === 'user' ? (
                         <p className="whitespace-pre-wrap text-[15px] leading-6 text-white">{message.content}</p>
                       ) : (
-                        <AssistantMarkdown content={message.content} />
+                        <AssistantMarkdown content={assistantContent} />
+                      )}
+
+                      {isAssistant && suggestedFollowUps.length > 0 && (
+                        <div className="mt-4 flex flex-wrap gap-2 border-t border-white/10 pt-3.5">
+                          {suggestedFollowUps.map((question) => (
+                            <button
+                              key={`${message.id}-${question}`}
+                              type="button"
+                              onClick={() => sendMessage(question)}
+                              disabled={isLoading}
+                              className="inline-flex max-w-full items-center gap-2 rounded-full border border-amber-200/20 bg-amber-200/10 px-3 py-1.5 text-left text-xs font-semibold leading-5 text-amber-50 transition hover:border-amber-200/40 hover:bg-amber-200/15 disabled:cursor-not-allowed disabled:opacity-55"
+                            >
+                              <Sparkles className="h-3.5 w-3.5 flex-none" />
+                              <span className="min-w-0 break-words">{question}</span>
+                            </button>
+                          ))}
+                        </div>
                       )}
 
                       {isAssistant && message.toolsUsed.length > 0 && (
