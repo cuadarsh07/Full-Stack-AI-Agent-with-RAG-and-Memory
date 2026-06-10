@@ -479,8 +479,10 @@ async def run_resume_agent(
     for item in tool_payload.results:
         source = item.get("source") or "unknown_source"
         page = item.get("page")
+        section_name = item.get("section_name") or item.get("metadata", {}).get("section_name")
         location = f"{source} page {page}" if page is not None else str(source)
-        context_lines.append(f"- [{location}] {item.get('content', '')}")
+        section_prefix = f"{section_name}: " if section_name else ""
+        context_lines.append(f"- [{location}] {section_prefix}{item.get('content', '')}")
 
     context_text = "\n".join(context_lines) if context_lines else "No resume matches were found."
 

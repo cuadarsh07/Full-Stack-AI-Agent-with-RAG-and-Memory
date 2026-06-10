@@ -1,0 +1,178 @@
+[
+  {
+    "id": "ba98d5f0acfaa6839d7d12a0972fe1f4160e71eff70971f16f2f6c3597228b23",
+    "text": "Adarsh Kumar cuadarsh07@gmail.com | github.com/adarshak07 | linkedin.com/in/adarsh07 | ♂phone(+91) 8789473625",
+    "metadata": {
+      "parent_id": "4b9741d074dc94a7f247f22673341ca3fe8d26aee69b0d70587ed00f7416f695",
+      "section_name": "Profile",
+      "source": "Adarsh_Kumar_Resume.pdf",
+      "content_hash": "ba98d5f0acfaa6839d7d12a0972fe1f4160e71eff70971f16f2f6c3597228b23",
+      "chunk_index": 0
+    }
+  },
+  {
+    "id": "c6d566207351fcdb4a0e8ed3ba72a82289ff8c278aa75093404e7e8b35e32d01",
+    "text": "Chandigarh University – B.E. CSE (CGPA: 7.35) May 2025 Sri Chaitanya Academy – Intermediate (97.8%) 2021 British English School – Secondary (92.4%) 2019",
+    "metadata": {
+      "parent_id": "a8b7a2a27e7f91bec857d2133e76154eeea833b5ab76a291c3b5b404ff667696",
+      "section_name": "Education",
+      "source": "Adarsh_Kumar_Resume.pdf",
+      "content_hash": "c6d566207351fcdb4a0e8ed3ba72a82289ff8c278aa75093404e7e8b35e32d01",
+      "chunk_index": 1
+    }
+  },
+  {
+    "id": "977388949159e7f220c45c9a13e1f48da85cb52bc0f7a0f68a8d5275db385b8e",
+    "text": "Neeve.ai – Graduate Engineer Trainee Oct 2025 – Present",
+    "metadata": {
+      "parent_id": "ed66c589a81c255b646c82cc2ea6298dd7bd9c88f5d23681e02fa744f57565ec",
+      "section_name": "Experience",
+      "source": "Adarsh_Kumar_Resume.pdf",
+      "content_hash": "977388949159e7f220c45c9a13e1f48da85cb52bc0f7a0f68a8d5275db385b8e",
+      "chunk_index": 2
+    }
+  },
+  {
+    "id": "87748f00cabb163976f7edbd4116b98b2147366f651db60a61fa33a589293aa5",
+    "text": "- Contributing to backend development using Java, Spring Boot, and microservice-oriented design.",
+    "metadata": {
+      "parent_id": "ed66c589a81c255b646c82cc2ea6298dd7bd9c88f5d23681e02fa744f57565ec",
+      "section_name": "Experience",
+      "source": "Adarsh_Kumar_Resume.pdf",
+      "content_hash": "87748f00cabb163976f7edbd4116b98b2147366f651db60a61fa33a589293aa5",
+      "chunk_index": 3
+    }
+  },
+  {
+    "id": "1c233be6efa22eba22954dd3dc9a50baff82d29356b041866fb966c150ab841b",
+    "text": "- Working with DevOps tools, Docker workflows, and Agile-based development cycles.",
+    "metadata": {
+      "parent_id": "ed66c589a81c255b646c82cc2ea6298dd7bd9c88f5d23681e02fa744f57565ec",
+      "section_name": "Experience",
+      "source": "Adarsh_Kumar_Resume.pdf",
+      "content_hash": "1c233be6efa22eba22954dd3dc9a50baff82d29356b041866fb966c150ab841b",
+      "chunk_index": 4
+    }
+  },
+  {
+    "id": "bc16cdf17b3f6e2433939f43d9e38820527ebc0e8556b1e1921125477ae30fad",
+    "text": "- Using bug tracking systems and internal wikis for documentation, issue tracking, and feature collaboration.",
+    "metadata": {
+      "parent_id": "ed66c589a81c255b646c82cc2ea6298dd7bd9c88f5d23681e02fa744f57565ec",
+      "section_name": "Experience",
+      "source": "Adarsh_Kumar_Resume.pdf",
+      "content_hash": "bc16cdf17b3f6e2433939f43d9e38820527ebc0e8556b1e1921125477ae30fad",
+      "chunk_index": 5
+    }
+  },
+  {
+    "id": "2e2b2519b1b1beb7050023ec1c2b4cadf456c616f91a76ede61e6b34d659181c",
+    "text": "Outlier (Contract Basis, Remote) – AI Training Associate F eb 2025 – Apr 2025",
+    "metadata": {
+      "parent_id": "ed66c589a81c255b646c82cc2ea6298dd7bd9c88f5d23681e02fa744f57565ec",
+      "section_name": "Experience",
+      "source": "Adarsh_Kumar_Resume.pdf",
+      "content_hash": "2e2b2519b1b1beb7050023ec1c2b4cadf456c616f91a76ede61e6b34d659181c",
+      "chunk_index": 6
+    }
+  },
+  {
+    "id": "e59b23c921bc20cb61ba30c820670f9f160a4caa040ebbab1b086d9ee376c147",
+    "text": "- Reviewed AI-generated solutions using development and testing tools , ensuring correctness and scalability.",
+    "metadata": {
+      "parent_id": "ed66c589a81c255b646c82cc2ea6298dd7bd9c88f5d23681e02fa744f57565ec",
+      "section_name": "Experience",
+      "source": "Adarsh_Kumar_Resume.pdf",
+      "content_hash": "e59b23c921bc20cb61ba30c820670f9f160a4caa040ebbab1b086d9ee376c147",
+      "chunk_index": 7
+    }
+  },
+  {
+    "id": "a07182eaf19385f55ff9030d85c4a2fd86ee30f44539fef145825215f8e475ef",
+    "text": "- Applied Java-based backend validation, analytical reasoning, and structured problem-solving.",
+    "metadata": {
+      "parent_id": "ed66c589a81c255b646c82cc2ea6298dd7bd9c88f5d23681e02fa744f57565ec",
+      "section_name": "Experience",
+      "source": "Adarsh_Kumar_Resume.pdf",
+      "content_hash": "a07182eaf19385f55ff9030d85c4a2fd86ee30f44539fef145825215f8e475ef",
+      "chunk_index": 8
+    }
+  },
+  {
+    "id": "05b48522f166ccabcc668ffda02b04817535a2ffaabc8a6b56fd76e821d9cf29",
+    "text": "- Worked with bug tracking workflows and documentation wikis in Agile-style task cycles.",
+    "metadata": {
+      "parent_id": "ed66c589a81c255b646c82cc2ea6298dd7bd9c88f5d23681e02fa744f57565ec",
+      "section_name": "Experience",
+      "source": "Adarsh_Kumar_Resume.pdf",
+      "content_hash": "05b48522f166ccabcc668ffda02b04817535a2ffaabc8a6b56fd76e821d9cf29",
+      "chunk_index": 9
+    }
+  },
+  {
+    "id": "ef943c1e3a1261261c5b3900cef24cba4d51a9ff6ad35b6ffec287d79784771c",
+    "text": "Programming Languages: Java, C++, SQL, HTML/CSS Backend & Microservices: Spring Boot, REST APIs, Microservice Design, Spring Security, Hibernate ORM DevOps & T ools: Docker, A WS/GCP, Git/GitHub, CI/CD Basics, Maven, Postman, Apache Tomcat Development Practices: Agile Methodology, Testing Tools, Bug Tracking Systems, Wiki Documentation, Code Optimization, Scalability & Automation Core Concepts: OOPS, Core Java, Java 8 Features, JDBC, Servlets, JSP Interpersonal Skills: Problem Solving, Analytical Reasoning, Team Collaboration, Leadership",
+    "metadata": {
+      "parent_id": "44b5ae260a986cef99d2512c6b036298ebb1bccaf4012cd1c07d053f87adf438",
+      "section_name": "Skills",
+      "source": "Adarsh_Kumar_Resume.pdf",
+      "content_hash": "ef943c1e3a1261261c5b3900cef24cba4d51a9ff6ad35b6ffec287d79784771c",
+      "chunk_index": 10
+    }
+  },
+  {
+    "id": "1a0784827e996ff709a7e82ae2720ddc94e42d381d17e2445c3ea202708e7f84",
+    "text": "Banking W eb Application – Java, Spring Boot, MySQL, ReactJS, OAuth2 Apr 2025 – Jul 2025",
+    "metadata": {
+      "parent_id": "56fa55b1164267bbe870a6943784c4ae0d41e4706b1b5f066e89013249304635",
+      "section_name": "Projects",
+      "source": "Adarsh_Kumar_Resume.pdf",
+      "content_hash": "1a0784827e996ff709a7e82ae2720ddc94e42d381d17e2445c3ea202708e7f84",
+      "chunk_index": 11
+    }
+  },
+  {
+    "id": "299f0461b065f78b6589fc1c4826e25518a7749974dc3255cde8c018d13a44c9",
+    "text": "- Built a full-stack banking system using Java, Spring Boot, and Microservice-style components ensuring maintainability and scalability.",
+    "metadata": {
+      "parent_id": "56fa55b1164267bbe870a6943784c4ae0d41e4706b1b5f066e89013249304635",
+      "section_name": "Projects",
+      "source": "Adarsh_Kumar_Resume.pdf",
+      "content_hash": "299f0461b065f78b6589fc1c4826e25518a7749974dc3255cde8c018d13a44c9",
+      "chunk_index": 12
+    }
+  },
+  {
+    "id": "1404b5b36899e5ff79e9ed551f2e0ff5031cc478c0de8df76ed6b4611800e97e",
+    "text": "- Implemented secure authentication (OAuth2) , modular account services, and tokenized transaction processing.",
+    "metadata": {
+      "parent_id": "56fa55b1164267bbe870a6943784c4ae0d41e4706b1b5f066e89013249304635",
+      "section_name": "Projects",
+      "source": "Adarsh_Kumar_Resume.pdf",
+      "content_hash": "1404b5b36899e5ff79e9ed551f2e0ff5031cc478c0de8df76ed6b4611800e97e",
+      "chunk_index": 13
+    }
+  },
+  {
+    "id": "ee6da23fb1a37048c4f151f318881b937b0b8d439627fea4f8b7c165e8e52af5",
+    "text": "- Designed components using software architecture principles for efficient data flow and maintainable service layers.",
+    "metadata": {
+      "parent_id": "56fa55b1164267bbe870a6943784c4ae0d41e4706b1b5f066e89013249304635",
+      "section_name": "Projects",
+      "source": "Adarsh_Kumar_Resume.pdf",
+      "content_hash": "ee6da23fb1a37048c4f151f318881b937b0b8d439627fea4f8b7c165e8e52af5",
+      "chunk_index": 14
+    }
+  },
+  {
+    "id": "4f49cdb7ab2c21f5c203aa72ab3d23e17a3ae9c701054359ac81989411d8c899",
+    "text": "- Integrated automated workflows for reward tracking, daily summaries, wallets, ledgers, and suggestion modules.",
+    "metadata": {
+      "parent_id": "56fa55b1164267bbe870a6943784c4ae0d41e4706b1b5f066e89013249304635",
+      "section_name": "Projects",
+      "source": "Adarsh_Kumar_Resume.pdf",
+      "content_hash": "4f49cdb7ab2c21f5c203aa72ab3d23e17a3ae9c701054359ac81989411d8c899",
+      "chunk_index": 15
+    }
+  }
+]
