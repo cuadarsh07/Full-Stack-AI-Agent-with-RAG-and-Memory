@@ -1,10 +1,12 @@
 fastapi
 uvicorn
 groq
-python-dotenv
 langchain-community
 chromadb
 tavily-python
 pydantic
 requests
 mcp
+pinecone>=9.1.0
+python-dotenv>=1.0.1
+sentence-transformers
