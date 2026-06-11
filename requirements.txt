@@ -2,6 +2,7 @@ fastapi
 uvicorn
 groq
 langchain-community
+langgraph
 chromadb
 tavily-python
 pydantic
