@@ -17,13 +17,16 @@ from agent_graph import agent_graph
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from groq import Groq
+from google import genai
+from google.genai import types as genai_types
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 load_dotenv()
 
-MODEL_NAME = "llama-3.3-70b-versatile"
+MODEL_NAME = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 RAG_REWRITE_MODEL_NAME = "llama3-8b-8192"
 MAX_AGENT_ITERATIONS = 5
 ESCALATION_PREFIX = "Escalation:"
@@ -39,12 +42,11 @@ MCP_STARTUP_TIMEOUT_SECONDS = float(os.environ.get("MCP_STARTUP_TIMEOUT_SECONDS"
 MCP_REQUIRED = os.environ.get("MCP_REQUIRED", "false").strip().lower() in {"1", "true", "yes", "on"}
 MCP_SERVER_PATH = Path(__file__).with_name("mcp_server.py").resolve()
 REQUIRED_ENV_KEYS = [
-    "GROQ_API_KEY",
+    "GEMINI_API_KEY",
     "PINECONE_API_KEY",
     "PINECONE_INDEX_NAME",
     "PINECONE_CLOUD",
     "PINECONE_REGION",
-    "TAVILY_API_KEY",
     "HF_TOKEN",
 ]
 
@@ -61,7 +63,11 @@ def log_mcp_startup(status: str, message: str, **extra: Any) -> None:
 
 
 def get_env_status() -> Dict[str, bool]:
-    return {key: bool(os.environ.get(key)) for key in REQUIRED_ENV_KEYS}
+    status = {key: bool(os.environ.get(key)) for key in REQUIRED_ENV_KEYS}
+    status["GEMINI_API_KEY"] = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+    status["GROQ_API_KEY"] = bool(os.environ.get("GROQ_API_KEY"))
+    status["TAVILY_API_KEY"] = bool(os.environ.get("TAVILY_API_KEY"))
+    return status
 
 
 def collect_exception_details(exc: BaseException) -> Dict[str, Any]:
@@ -167,6 +173,190 @@ app.add_middleware(
 
 groq_api_key = os.environ.get("GROQ_API_KEY")
 client = Groq(api_key=groq_api_key) if groq_api_key else None
+gemini_api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+gemini_client: Optional[genai.Client] = None
+gemini_client_lock = threading.Lock()
+
+if gemini_api_key:
+    try:
+        gemini_client = genai.Client(api_key=gemini_api_key)
+    except Exception as exc:
+        print(f"Warning: Failed to initialize Google GenAI Client: {exc}")
+
+
+def is_gemini_active() -> bool:
+    return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or gemini_api_key)
+
+
+def get_gemini_client() -> genai.Client:
+    global gemini_client
+    active_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or gemini_api_key
+    if not active_key:
+        raise RuntimeError("Neither GEMINI_API_KEY nor GOOGLE_API_KEY is configured.")
+    if gemini_client is not None:
+        return gemini_client
+    with gemini_client_lock:
+        if gemini_client is not None:
+            return gemini_client
+        gemini_client = genai.Client(api_key=active_key)
+    return gemini_client
+
+
+@dataclass
+class FunctionCallAdapter:
+    name: str
+    arguments: str
+
+
+@dataclass
+class ToolCallAdapter:
+    id: str
+    type: str
+    function: FunctionCallAdapter
+
+
+@dataclass
+class MessageAdapter:
+    content: Optional[str]
+    tool_calls: Optional[List[ToolCallAdapter]] = None
+
+
+@dataclass
+class ChoiceAdapter:
+    message: MessageAdapter
+
+
+@dataclass
+class UsageAdapter:
+    prompt_tokens: int
+    completion_tokens: int
+
+
+@dataclass
+class ChatResponseAdapter:
+    choices: List[ChoiceAdapter]
+    usage: UsageAdapter
+
+
+def adapt_gemini_response(gemini_resp: Any) -> ChatResponseAdapter:
+    candidates = getattr(gemini_resp, "candidates", []) or []
+    if not candidates:
+        content = getattr(gemini_resp, "text", "") or ""
+        return ChatResponseAdapter(
+            choices=[ChoiceAdapter(message=MessageAdapter(content=content, tool_calls=None))],
+            usage=UsageAdapter(prompt_tokens=0, completion_tokens=0),
+        )
+
+    candidate = candidates[0]
+    content_parts = getattr(getattr(candidate, "content", None), "parts", []) or []
+    text_pieces = []
+    tool_calls: List[ToolCallAdapter] = []
+
+    for idx, part in enumerate(content_parts):
+        fn_call = getattr(part, "function_call", None)
+        if fn_call:
+            fn_name = getattr(fn_call, "name", "")
+            fn_args = getattr(fn_call, "args", {}) or {}
+            args_str = json.dumps(fn_args) if isinstance(fn_args, dict) else str(fn_args)
+            tool_calls.append(
+                ToolCallAdapter(
+                    id=f"call_{idx}_{uuid.uuid4().hex[:6]}",
+                    type="function",
+                    function=FunctionCallAdapter(name=fn_name, arguments=args_str),
+                )
+            )
+        part_text = getattr(part, "text", None)
+        if part_text:
+            text_pieces.append(part_text)
+
+    full_text = "\n".join(text_pieces).strip() if text_pieces else ""
+    usage_meta = getattr(gemini_resp, "usage_metadata", None)
+    prompt_tokens = int(getattr(usage_meta, "prompt_token_count", 0) or 0) if usage_meta else 0
+    completion_tokens = int(getattr(usage_meta, "candidates_token_count", 0) or 0) if usage_meta else 0
+
+    return ChatResponseAdapter(
+        choices=[ChoiceAdapter(message=MessageAdapter(content=full_text, tool_calls=tool_calls if tool_calls else None))],
+        usage=UsageAdapter(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens),
+    )
+
+
+def convert_messages_to_gemini(
+    messages: List[Dict[str, Any]],
+    system_prompt: Optional[str] = None,
+) -> tuple[List[Any], str]:
+    contents: List[Any] = []
+    sys_instruction = system_prompt or ""
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if role == "system":
+            if sys_instruction:
+                sys_instruction += "\n" + content
+            else:
+                sys_instruction = content
+        elif role == "assistant":
+            parts = []
+            if content:
+                parts.append(genai_types.Part.from_text(text=content))
+            tool_calls = msg.get("tool_calls", [])
+            for tc in tool_calls:
+                fn = tc.get("function", {}) if isinstance(tc, dict) else getattr(tc, "function", None)
+                if fn:
+                    fn_name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", "")
+                    raw_args = fn.get("arguments", "{}") if isinstance(fn, dict) else getattr(fn, "arguments", "{}")
+                    parsed_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    parts.append(genai_types.Part.from_function_call(name=fn_name, args=parsed_args))
+            if parts:
+                contents.append(genai_types.Content(role="model", parts=parts))
+        elif role == "tool":
+            name = msg.get("name", "tool")
+            tool_content = str(msg.get("content", ""))
+            result_data: Any = {"result": tool_content}
+            try:
+                result_data = json.loads(tool_content)
+            except Exception:
+                pass
+            parts = [genai_types.Part.from_function_response(name=name, response={"response": result_data})]
+            contents.append(genai_types.Content(role="user", parts=parts))
+        else:
+            if content:
+                contents.append(genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=content)]))
+
+    return contents, sys_instruction
+
+
+GEMINI_TOOLS = [
+    genai_types.Tool(
+        function_declarations=[
+            genai_types.FunctionDeclaration(
+                name="run_resume_agent",
+                description="Delegate to the resume specialist worker for grounded answers from Adarsh's resume database.",
+                parameters=genai_types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "query": genai_types.Schema(type="STRING", description="Specific resume search query")
+                    },
+                    required=["query"],
+                ),
+            ),
+            genai_types.Tool(
+                function_declarations=[
+                    genai_types.FunctionDeclaration(
+                        name="run_web_agent",
+                        description="Delegate to the web research specialist worker for current live internet information.",
+                        parameters=genai_types.Schema(
+                            type="OBJECT",
+                            properties={
+                                "query": genai_types.Schema(type="STRING", description="Specific web search query")
+                            },
+                            required=["query"],
+                        ),
+                    ),
+                ]
+            ),
+        ]
+    )
+]
 
 SESSION_STORE: Dict[str, Dict[str, Any]] = {}
 SESSION_LOCK = threading.Lock()
@@ -367,12 +557,18 @@ def get_groq_client() -> Groq:
 
 def extract_groq_usage(response: Any) -> tuple[int, int]:
     usage = getattr(response, "usage", None)
-    if usage is None:
-        return 0, 0
+    if usage is not None:
+        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+        return prompt_tokens, completion_tokens
 
-    prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
-    completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
-    return prompt_tokens, completion_tokens
+    usage_meta = getattr(response, "usage_metadata", None)
+    if usage_meta is not None:
+        prompt_tokens = int(getattr(usage_meta, "prompt_token_count", 0) or 0)
+        completion_tokens = int(getattr(usage_meta, "candidates_token_count", 0) or 0)
+        return prompt_tokens, completion_tokens
+
+    return 0, 0
 
 
 def default_follow_ups() -> List[str]:
@@ -1629,28 +1825,44 @@ def finalize_master_chat_response(
     )
 
 
-def request_agent_step(groq_client: Groq, llm_messages: List[Dict[str, Any]]) -> Any:
+def request_agent_step(llm_client: Any, llm_messages: List[Dict[str, Any]]) -> Any:
     last_error: Optional[Exception] = None
 
     for attempt in range(AGENT_REQUEST_RETRIES + 1):
         try:
-            return groq_client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[{"role": "system", "content": build_master_system_prompt()}, *llm_messages],
-                tools=TOOLS_MENU,
-                tool_choice="auto",
-            )
+            if is_gemini_active():
+                gem_client = get_gemini_client()
+                contents, sys_inst = convert_messages_to_gemini(
+                    llm_messages,
+                    system_prompt=build_master_system_prompt(),
+                )
+                raw_response = gem_client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=contents,
+                    config=genai_types.GenerateContentConfig(
+                        system_instruction=sys_inst,
+                        tools=GEMINI_TOOLS,
+                    ),
+                )
+                return adapt_gemini_response(raw_response)
+            else:
+                return llm_client.chat.completions.create(
+                    model=MODEL_NAME,
+                    messages=[{"role": "system", "content": build_master_system_prompt()}, *llm_messages],
+                    tools=TOOLS_MENU,
+                    tool_choice="auto",
+                )
         except Exception as exc:
             last_error = exc
             if attempt >= AGENT_REQUEST_RETRIES:
                 break
             time.sleep(AGENT_RETRY_DELAY_SECONDS)
 
-    raise RuntimeError(f"Groq request failed after retries: {last_error}") from last_error
+    raise RuntimeError(f"Agent step request failed after retries: {last_error}") from last_error
 
 
 def request_structured_supervisor_response(
-    groq_client: Groq,
+    llm_client: Any,
     llm_messages: List[Dict[str, Any]],
     draft_answer: Optional[str] = None,
 ) -> Any:
@@ -1683,18 +1895,31 @@ def request_structured_supervisor_response(
     last_error: Optional[Exception] = None
     for attempt in range(AGENT_REQUEST_RETRIES + 1):
         try:
-            return groq_client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=final_messages,
-                response_format={"type": "json_object"},
-            )
+            if is_gemini_active():
+                gem_client = get_gemini_client()
+                contents, sys_inst = convert_messages_to_gemini(final_messages)
+                raw_response = gem_client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=contents,
+                    config=genai_types.GenerateContentConfig(
+                        system_instruction=sys_inst,
+                        response_mime_type="application/json",
+                    ),
+                )
+                return adapt_gemini_response(raw_response)
+            else:
+                return llm_client.chat.completions.create(
+                    model=MODEL_NAME,
+                    messages=final_messages,
+                    response_format={"type": "json_object"},
+                )
         except Exception as exc:
             last_error = exc
             if attempt >= AGENT_REQUEST_RETRIES:
                 break
             time.sleep(AGENT_RETRY_DELAY_SECONDS)
 
-    raise RuntimeError(f"Groq structured response failed after retries: {last_error}") from last_error
+    raise RuntimeError(f"Structured response failed after retries: {last_error}") from last_error
 
 
 async def append_tool_results(
@@ -1755,30 +1980,39 @@ async def run_master_agent(request: MasterChatRequest, session: Optional[ClientS
         tool_calls: List[str],
     ) -> str:
         try:
-            response = get_groq_client().chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "Synthesize the resume and live web specialist outputs into one concise, "
-                            "grounded answer. Do not invent facts. If one source is insufficient, say so."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Question: {question}\n\n"
-                            f"Tools used: {', '.join(tool_calls)}\n\n"
-                            f"Resume specialist output:\n{resume_context or 'Not used.'}\n\n"
-                            f"Live web specialist output:\n{web_context or 'Not used.'}"
-                        ),
-                    },
-                ],
+            sys_prompt = (
+                "Synthesize the resume and live web specialist outputs into one concise, "
+                "grounded answer. Do not invent facts. If one source is insufficient, say so."
             )
-            prompt_tokens, completion_tokens = extract_groq_usage(response)
-            telemetry.add_usage(prompt_tokens, completion_tokens)
-            return (response.choices[0].message.content or "").strip()
+            user_prompt = (
+                f"Question: {question}\n\n"
+                f"Tools used: {', '.join(tool_calls)}\n\n"
+                f"Resume specialist output:\n{resume_context or 'Not used.'}\n\n"
+                f"Live web specialist output:\n{web_context or 'Not used.'}"
+            )
+            if is_gemini_active():
+                gem_client = get_gemini_client()
+                raw_response = gem_client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=user_prompt,
+                    config=genai_types.GenerateContentConfig(
+                        system_instruction=sys_prompt,
+                    ),
+                )
+                prompt_tokens, completion_tokens = extract_groq_usage(raw_response)
+                telemetry.add_usage(prompt_tokens, completion_tokens)
+                return (getattr(raw_response, "text", "") or "").strip()
+            else:
+                response = get_groq_client().chat.completions.create(
+                    model=MODEL_NAME,
+                    messages=[
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                )
+                prompt_tokens, completion_tokens = extract_groq_usage(response)
+                telemetry.add_usage(prompt_tokens, completion_tokens)
+                return (response.choices[0].message.content or "").strip()
         except Exception as exc:
             warnings.append(f"Graph final synthesis failed: {exc}")
             return (
@@ -1890,16 +2124,28 @@ def summarize_text(request: SummaryRequest):
     'title' (a short, catchy title for the text) and
     'content' (the actual summary)."""
 
-    chat_completion = get_groq_client().chat.completions.create(
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": request.text},
-        ],
-        model=MODEL_NAME,
-        response_format={"type": "json_object"},
-    )
+    if is_gemini_active():
+        gem_client = get_gemini_client()
+        response = gem_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=request.text,
+            config=genai_types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                response_mime_type="application/json",
+            ),
+        )
+        raw_response = response.text or "{}"
+    else:
+        chat_completion = get_groq_client().chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": request.text},
+            ],
+            model=MODEL_NAME,
+            response_format={"type": "json_object"},
+        )
+        raw_response = chat_completion.choices[0].message.content
 
-    raw_response = chat_completion.choices[0].message.content
     structured_summary = json.loads(raw_response)
     return structured_summary
 
@@ -1919,16 +2165,28 @@ async def ask_document(http_request: Request, request: QuestionRequest):
     {context_text}
     """
 
-    chat_completion = get_groq_client().chat.completions.create(
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": request.question},
-        ],
-        model=MODEL_NAME,
-    )
+    if is_gemini_active():
+        gem_client = get_gemini_client()
+        response = gem_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=request.question,
+            config=genai_types.GenerateContentConfig(
+                system_instruction=system_prompt,
+            ),
+        )
+        answer = response.text or ""
+    else:
+        chat_completion = get_groq_client().chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": request.question},
+            ],
+            model=MODEL_NAME,
+        )
+        answer = chat_completion.choices[0].message.content
 
     return {
-        "answer": chat_completion.choices[0].message.content,
+        "answer": answer,
         "sources_used": [doc.get("content", "") for doc in docs],
         "tool_success": tool_result.success,
         "tool_error": tool_result.error.model_dump() if tool_result.error else None,
@@ -1954,20 +2212,33 @@ async def run_agent(http_request: Request, request: AgentRequest):
 
 @app.post("/chat")
 def run_chat(request: ChatHistoryRequest):
-    conversation_history = as_groq_messages(request.messages)
-
-    response = get_groq_client().chat.completions.create(
-        model=MODEL_NAME,
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a friendly, conversational AI. You have perfect memory of this conversation.",
-            },
-            *conversation_history,
-        ],
-    )
-
-    return {"reply": response.choices[0].message.content}
+    system_prompt = "You are a friendly, conversational AI. You have perfect memory of this conversation."
+    if is_gemini_active():
+        gem_client = get_gemini_client()
+        contents, _ = convert_messages_to_gemini(
+            [{"role": m.role, "content": m.content} for m in request.messages]
+        )
+        response = gem_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=contents,
+            config=genai_types.GenerateContentConfig(
+                system_instruction=system_prompt,
+            ),
+        )
+        return {"reply": response.text or ""}
+    else:
+        conversation_history = as_groq_messages(request.messages)
+        response = get_groq_client().chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": system_prompt,
+                },
+                *conversation_history,
+            ],
+        )
+        return {"reply": response.choices[0].message.content}
 
 
 @app.get("/health/mcp")

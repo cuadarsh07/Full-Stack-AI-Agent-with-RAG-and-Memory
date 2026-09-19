@@ -118,6 +118,8 @@ PROFILE_QUERY_TERMS = {
 pinecone_api_key = os.environ.get("PINECONE_API_KEY")
 pinecone_index_name = os.environ.get("PINECONE_INDEX_NAME", "portfolio-rag-chunks")
 tavily_api_key = os.environ.get("TAVILY_API_KEY")
+gemini_api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+gemini_model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 mcp = FastMCP("Adarsh Portfolio Server")
 logger = logging.getLogger("portfolio_mcp_server")
@@ -198,10 +200,12 @@ def validate_query(query: str, tool_name: str) -> Optional[ToolExecutionPayload]
 embedding_model: Optional[Any] = None
 pinecone_index: Optional[Any] = None
 tavily_client: Optional[Any] = None
+gemini_client: Optional[Any] = None
 local_resume_chunks: Optional[List[Dict[str, Any]]] = None
 embedding_model_lock = threading.Lock()
 pinecone_index_lock = threading.Lock()
 tavily_client_lock = threading.Lock()
+gemini_client_lock = threading.Lock()
 local_resume_chunks_lock = threading.Lock()
 
 
@@ -306,6 +310,27 @@ def get_tavily_client() -> Any:
         tavily_client = TavilyClient(api_key=tavily_api_key)
 
     return tavily_client
+
+
+def get_gemini_client() -> Any:
+    global gemini_client
+
+    active_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or gemini_api_key
+    if not active_key:
+        return None
+
+    if gemini_client is not None:
+        return gemini_client
+
+    with gemini_client_lock:
+        if gemini_client is not None:
+            return gemini_client
+
+        from google import genai
+
+        gemini_client = genai.Client(api_key=active_key)
+
+    return gemini_client
 
 
 def get_local_resume_chunks() -> List[Dict[str, Any]]:
@@ -575,8 +600,8 @@ def search_resume_database(query: str) -> str:
 def search_live_web(query: str) -> str:
     total_started_at = time.perf_counter()
     timings: Dict[str, Any] = {
-        "tavily_client_ms": 0.0,
-        "tavily_search_ms": 0.0,
+        "engine": "none",
+        "search_ms": 0.0,
     }
     validation_error = validate_query(query, "search_live_web")
     if validation_error is not None:
@@ -584,52 +609,118 @@ def search_live_web(query: str) -> str:
         log_tool_timing("search_live_web", timings)
         return validation_error.model_dump_json()
 
+    # 1. Prioritize Google Gemini with Google Search Grounding if configured
+    g_client = get_gemini_client()
+    if g_client is not None:
+        try:
+            search_started_at = time.perf_counter()
+            from google.genai import types
+
+            prompt = (
+                f"You are a real-time web search tool. Search the web and provide current, factual, "
+                f"and concise information with specific details for the query: '{query}'. "
+                f"Provide concise factual highlights and direct answers."
+            )
+            response = g_client.models.generate_content(
+                model=gemini_model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                ),
+            )
+            timings["search_ms"] = elapsed_ms(search_started_at)
+            timings["engine"] = "google_search_grounding"
+
+            results: List[Dict[str, Any]] = []
+
+            # Extract source URLs from grounding metadata
+            candidates = getattr(response, "candidates", None) or []
+            grounding_chunks = []
+            if candidates:
+                metadata = getattr(candidates[0], "grounding_metadata", None)
+                if metadata:
+                    grounding_chunks = getattr(metadata, "grounding_chunks", None) or []
+
+            for chunk in grounding_chunks:
+                web_info = getattr(chunk, "web", None)
+                if web_info:
+                    uri = getattr(web_info, "uri", "") or ""
+                    title = getattr(web_info, "title", "") or ""
+                    if uri or title:
+                        results.append({
+                            "url": uri,
+                            "content": truncate_text(f"{title}: {uri}" if title else uri),
+                        })
+
+            # Prepend the grounded synthesis as primary result
+            answer_text = (getattr(response, "text", "") or "").strip()
+            if answer_text:
+                results.insert(0, {
+                    "url": "https://google.com/search",
+                    "content": truncate_text(answer_text, limit=1200),
+                })
+
+            if results:
+                payload = ToolExecutionPayload(
+                    success=True,
+                    tool_name="search_live_web",
+                    query=query,
+                    results=results,
+                )
+                timings["total_ms"] = elapsed_ms(total_started_at)
+                log_tool_timing("search_live_web", timings)
+                return payload.model_dump_json()
+        except Exception as exc:
+            logger.warning(f"Google Search Grounding encountered error: {exc}. Trying fallback.")
+
+    # 2. Fallback to Tavily if configured
     client_started_at = time.perf_counter()
     client = get_tavily_client()
     timings["tavily_client_ms"] = elapsed_ms(client_started_at)
-    if client is None:
-        timings["total_ms"] = elapsed_ms(total_started_at)
-        log_tool_timing("search_live_web", timings)
-        return build_tool_error(
-            tool_name="search_live_web",
-            query=query,
-            error_type="configuration_error",
-            message="TAVILY_API_KEY is not configured.",
-        ).model_dump_json()
+    if client is not None:
+        try:
+            search_started_at = time.perf_counter()
+            response = client.search(
+                query=query,
+                search_depth="basic",
+                max_results=DEFAULT_WEB_RESULTS,
+            )
+            timings["search_ms"] = elapsed_ms(search_started_at)
+            timings["engine"] = "tavily"
+            results = [
+                {
+                    "url": result.get("url", ""),
+                    "content": truncate_text(result.get("content", "")),
+                }
+                for result in response.get("results", [])
+            ]
+            payload = ToolExecutionPayload(
+                success=True,
+                tool_name="search_live_web",
+                query=query,
+                results=results,
+            )
+            timings["total_ms"] = elapsed_ms(total_started_at)
+            log_tool_timing("search_live_web", timings)
+            return payload.model_dump_json()
+        except Exception as exc:
+            timings["total_ms"] = elapsed_ms(total_started_at)
+            log_tool_timing("search_live_web", timings)
+            return build_tool_error(
+                tool_name="search_live_web",
+                query=query,
+                error_type="tool_execution_error",
+                message=f"Live web search failed: {exc}",
+            ).model_dump_json()
 
-    try:
-        search_started_at = time.perf_counter()
-        response = client.search(
-            query=query,
-            search_depth="basic",
-            max_results=DEFAULT_WEB_RESULTS,
-        )
-        timings["tavily_search_ms"] = elapsed_ms(search_started_at)
-        results = [
-            {
-                "url": result.get("url", ""),
-                "content": truncate_text(result.get("content", "")),
-            }
-            for result in response.get("results", [])
-        ]
-        payload = ToolExecutionPayload(
-            success=True,
-            tool_name="search_live_web",
-            query=query,
-            results=results,
-        )
-        timings["total_ms"] = elapsed_ms(total_started_at)
-        log_tool_timing("search_live_web", timings)
-        return payload.model_dump_json()
-    except Exception as exc:
-        timings["total_ms"] = elapsed_ms(total_started_at)
-        log_tool_timing("search_live_web", timings)
-        return build_tool_error(
-            tool_name="search_live_web",
-            query=query,
-            error_type="tool_execution_error",
-            message=f"Live web search failed: {exc}",
-        ).model_dump_json()
+    timings["total_ms"] = elapsed_ms(total_started_at)
+    log_tool_timing("search_live_web", timings)
+    return build_tool_error(
+        tool_name="search_live_web",
+        query=query,
+        error_type="configuration_error",
+        message="Neither GEMINI_API_KEY (Google Search) nor TAVILY_API_KEY is configured.",
+    ).model_dump_json()
 
 
 def warm_resume_dependencies() -> None:
