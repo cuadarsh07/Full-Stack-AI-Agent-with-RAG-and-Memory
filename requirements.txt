@@ -7,7 +7,7 @@ chromadb
 tavily-python
 pydantic
 requests
-mcp
+mcp>=1.13.0,<2
 pinecone>=9.1.0
 python-dotenv>=1.0.1
 sentence-transformers
