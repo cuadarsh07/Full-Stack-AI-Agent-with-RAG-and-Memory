@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 load_dotenv()
 
 MODEL_NAME = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 RAG_REWRITE_MODEL_NAME = "llama3-8b-8192"
 MAX_AGENT_ITERATIONS = 5
 ESCALATION_PREFIX = "Escalation:"

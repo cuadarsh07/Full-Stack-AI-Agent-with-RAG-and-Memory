@@ -119,7 +119,7 @@ pinecone_api_key = os.environ.get("PINECONE_API_KEY")
 pinecone_index_name = os.environ.get("PINECONE_INDEX_NAME", "portfolio-rag-chunks")
 tavily_api_key = os.environ.get("TAVILY_API_KEY")
 gemini_api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-gemini_model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+gemini_model_name = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 
 mcp = FastMCP("Adarsh Portfolio Server")
 logger = logging.getLogger("portfolio_mcp_server")
