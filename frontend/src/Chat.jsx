@@ -642,7 +642,7 @@ export default function Chat({ newChatEventName }) {
                 Welcome to Adarsh AI
               </p>
               <h3 className="mt-2 text-[2rem] font-black tracking-tight text-white sm:text-[2.2rem]">
-                Ask me anything in plain language.
+                Ask me anything.
               </h3>
               <p className="mt-3.5 max-w-xl text-sm leading-7 text-zinc-300 sm:text-[15px]">
                 Ask me anything about Adarsh's background, projects, and experience, or let me search the live web for current events and recent updates.
