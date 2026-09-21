@@ -59,6 +59,17 @@ SMALLTALK_RE = re.compile(
     re.IGNORECASE,
 )
 
+CONVERSATIONAL_FEEDBACK_RE = re.compile(
+    r"\b("
+    r"pathetic|terrible|horrible|useless|bad|nonsense|wrong|stop|dumb|stupid|awful|"
+    r"unhelpful|poor|worst|annoying|apologize|sorry|what do you mean|why did you|"
+    r"why would you|makes no sense|doesn't make sense|that makes no sense|"
+    r"didn't ask|did not ask|not what i asked|listen to me|repeat|rubbish|trash|"
+    r"sucks|suck|disagree|ridiculous|meaningless|frustrated|frustrating"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 def _tool_calls(state: AgentState) -> List[str]:
     return list(state.get("tool_calls") or [])
@@ -71,9 +82,13 @@ def _tool_payloads(state: AgentState) -> List[Any]:
 async def supervisor_node(state: AgentState) -> AgentState:
     # Nodes are workers: this one chooses which specialist should run.
     message = state.get("user_message", "")
+    chat_history = state.get("chat_history") or []
+    lowered = message.lower().strip()
+    has_prior_history = len(chat_history) > 1
+
+    is_feedback = bool(CONVERSATIONAL_FEEDBACK_RE.search(lowered))
     needs_resume = bool(RESUME_INTENT_RE.search(message))
     needs_web = bool(WEB_INTENT_RE.search(message))
-    lowered = message.lower()
 
     if needs_web and re.search(r"\bai trends?\b|\btrend matters most\b", lowered) and not re.search(
         r"\b(adarsh|resume|cv|profile|portfolio|candidate|his skills|adarsh's)\b",
@@ -81,7 +96,11 @@ async def supervisor_node(state: AgentState) -> AgentState:
     ):
         needs_resume = False
 
-    if needs_resume and needs_web:
+    # If the user is expressing feedback or reaction to an earlier turn,
+    # handle it conversationally with chat history rather than re-running cold search.
+    if is_feedback and has_prior_history:
+        route = "smalltalk"
+    elif needs_resume and needs_web:
         route = "hybrid"
     elif needs_resume:
         route = "resume"
@@ -214,16 +233,46 @@ async def hybrid_parallel_node(state: AgentState) -> AgentState:
 
 
 async def smalltalk_node(state: AgentState) -> AgentState:
-    message = state.get("user_message", "").strip().lower()
-    if message.startswith(("thank", "thanks")):
-        answer = "You're welcome. Happy to keep going with Adarsh's profile or a current tech topic."
-    elif message.startswith(("bye", "goodbye")):
-        answer = "Goodbye. Come back anytime if you want to continue."
-    elif re.search(r"\b(name|who are you)\b", message):
-        answer = "I'm Adarsh AI, your personal guide for Adarsh Kumar's resume, projects, skills, and current tech topics."
-    elif "what can you do" in message or message.startswith("help") or "how can you help" in message:
-        answer = "I can explain Adarsh Kumar's background, summarize his resume for recruiters, compare his skills with current roles, and check live web context."
-    elif "how are you" in message or "what's up" in message:
+    message = state.get("user_message", "").strip()
+    lowered = message.lower()
+    chat_history = state.get("chat_history") or []
+    has_prior_history = len(chat_history) > 1
+
+    # First turn greeting check - only if no prior conversation exists
+    if not has_prior_history:
+        if re.match(r"^\s*(hi|hello|hey|heya|yo)\b[!.?\s]*$", lowered):
+            return {**state, "final_answer": "Hey, good to see you. I can help with Adarsh's resume, projects, skills, or current tech topics."}
+        if re.match(r"^\s*(bye|goodbye)\b[!.?\s]*$", lowered):
+            return {**state, "final_answer": "Goodbye. Come back anytime if you want to continue."}
+        if re.match(r"^\s*(thanks|thank you)\b[!.?\s]*$", lowered):
+            return {**state, "final_answer": "You're welcome. Happy to keep going with Adarsh's profile or a current tech topic."}
+        if re.search(r"\b(name|who are you)\b", lowered):
+            return {**state, "final_answer": "I'm Adarsh AI, your personal guide for Adarsh Kumar's resume, projects, skills, and current tech topics."}
+        if "what can you do" in lowered or lowered.startswith("help") or "how can you help" in lowered:
+            return {**state, "final_answer": "I can explain Adarsh Kumar's background, summarize his resume for recruiters, compare his skills with current roles, and check live web context."}
+
+    # If a synthesizer or conversational agent is available, use it with chat_history for real contextual intelligence!
+    responder = state.get("conversational_agent") or state.get("synthesizer")
+    if responder:
+        try:
+            answer = await responder(
+                question=message,
+                resume_context=state.get("resume_context"),
+                web_context=state.get("web_context"),
+                tool_calls=_tool_calls(state),
+                chat_history=chat_history,
+            )
+            if answer and answer.strip():
+                return {**state, "final_answer": answer.strip()}
+        except Exception:
+            pass
+
+    # Grounded fallback if LLM is unavailable:
+    if has_prior_history and re.search(r"\b(pathetic|bad|wrong|terrible|unhelpful|horrible)\b", lowered):
+        answer = "I apologize for that earlier response. Please let me know what specific information about Adarsh's background, projects, or skills you're looking for, and I'll do my best to help."
+    elif has_prior_history:
+        answer = "I'm here to help. Could you clarify what specific details you'd like to know about Adarsh's resume or technical background?"
+    elif "how are you" in lowered or "what's up" in lowered:
         answer = "I'm doing well, bro. Ready to help with Adarsh's resume, projects, skills, or anything current you want checked."
     else:
         answer = "Hey, good to see you. I can help with Adarsh's resume, projects, skills, or current tech topics."
@@ -235,6 +284,23 @@ async def final_answer_node(state: AgentState) -> AgentState:
     resume_context = state.get("resume_context")
     web_context = state.get("web_context")
     tool_calls = _tool_calls(state)
+    user_message = state.get("user_message", "")
+    chat_history = state.get("chat_history") or []
+    synthesizer = state.get("synthesizer")
+
+    if synthesizer:
+        try:
+            synthesized = await synthesizer(
+                question=user_message,
+                resume_context=resume_context,
+                web_context=web_context,
+                tool_calls=tool_calls,
+                chat_history=chat_history,
+            )
+            if synthesized and synthesized.strip():
+                return {**state, "final_answer": synthesized.strip()}
+        except Exception:
+            pass
 
     if resume_context and not web_context:
         answer = resume_context

@@ -674,6 +674,14 @@ export default function Chat({ newChatEventName }) {
                 ref={textareaRef}
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault()
+                    if (!isLoading && input.trim()) {
+                      handleSendMessage(event)
+                    }
+                  }
+                }}
                 placeholder="Ask about Adarsh, his resume, projects, or any current topic..."
                 className="min-h-[3.5rem] w-full resize-none rounded-[22px] border border-white/10 bg-white/[0.04] px-4 py-2.5 text-sm leading-6 text-white outline-none transition placeholder:text-zinc-500 focus:border-amber-200/40 focus:bg-white/[0.06]"
                 disabled={isLoading}

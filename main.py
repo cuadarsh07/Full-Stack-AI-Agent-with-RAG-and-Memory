@@ -771,23 +771,45 @@ def build_concise_answer(
             max_points=3,
         )
 
+    if route in {"smalltalk", "conversational"}:
+        return clean_answer
+
     if has_resume or route == "resume":
         points = split_answer_points(resume_context or clean_answer)
+        valid_points = [p for p in points if "no resume matches" not in p.lower()]
         evidence_text = f"{clean_answer} {resume_context or ''}"
+
         if "ai" in query and ("project" in query or "projects" in query) and detect_weak_resume_evidence(evidence_text):
             return format_answer_points(
                 "I don’t see named AI projects in the resume evidence yet.",
-                [f"Closest related evidence: {point}" for point in points[:2]],
+                [f"Closest related evidence: {point}" for point in (valid_points or points)[:2]],
                 max_points=2,
             )
 
+        # If clean_answer was synthesized into a natural complete response rather than raw bullet points:
+        if clean_answer and not clean_answer.startswith("- ") and not clean_answer.startswith("• "):
+            if not resume_context or "no resume matches" in resume_context.lower():
+                return clean_answer
+            if clean_answer != resume_context and len(clean_answer.split()) > 8 and "no resume matches" not in clean_answer.lower():
+                if "\n- " not in clean_answer and "\n• " not in clean_answer and len(clean_answer) <= 350:
+                    return clean_answer
+
+        if not valid_points:
+            return clean_answer if "no resume matches" not in clean_answer.lower() else (
+                "I couldn't find a direct match in Adarsh's resume for that question. "
+                "His profile highlights his backend development experience with Java, Spring Boot, microservices, and Docker at Neeve.ai."
+            )
+
         opening = infer_opening_sentence(clean_answer, has_resume=True, has_web=False, query=query)
-        return format_answer_points(opening, points[:4], max_points=4)
+        return format_answer_points(opening, valid_points[:4], max_points=4)
 
     if has_web or route == "web":
         points = split_answer_points(web_context or clean_answer)
+        valid_points = [p for p in points if "no live web matches" not in p.lower()]
+        if not valid_points:
+            return clean_answer
         opening = infer_opening_sentence(clean_answer, has_resume=False, has_web=True, query=query)
-        return format_answer_points(opening, points[:4], max_points=4)
+        return format_answer_points(opening, valid_points[:4], max_points=4)
 
     if len(clean_answer) <= 220 and "\n" not in clean_answer:
         return clean_answer
@@ -1975,21 +1997,42 @@ async def run_master_agent(request: MasterChatRequest, session: Optional[ClientS
 
     async def synthesize_graph_contexts(
         question: str,
-        resume_context: Optional[str],
-        web_context: Optional[str],
-        tool_calls: List[str],
+        resume_context: Optional[str] = None,
+        web_context: Optional[str] = None,
+        tool_calls: Optional[List[str]] = None,
+        chat_history: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
+        tool_list = list(tool_calls or [])
         try:
             sys_prompt = (
-                "Synthesize the resume and live web specialist outputs into one concise, "
-                "grounded answer. Do not invent facts. If one source is insufficient, say so."
+                "You are Adarsh AI, an intelligent, conversational, and polite assistant representing Adarsh Kumar.\n"
+                "Adarsh Kumar is a software engineer specializing in backend development, Java, Spring Boot, microservices, Docker, APIs, and AI integrations (Neeve.ai Graduate Engineer Trainee).\n\n"
+                "Core Guidelines:\n"
+                "1. Maintain continuity with the prior conversation history.\n"
+                "2. If the user expresses frustration, criticism, or confusion about a previous answer (e.g. 'Pathetic response', 'why did you say that', 'that was useless'), apologize politely for the unhelpful answer, take accountability, and answer or clarify constructively.\n"
+                "3. If the user asks something not found in the resume (such as claims of royalty, nicknames, unrelated personal questions), explain politely and naturally what Adarsh's profile actually covers (software engineering, backend systems, Java, Spring Boot, etc.) rather than giving a cold error or saying 'no matches found'.\n"
+                "4. Synthesize the provided specialist outputs into a natural, grounded, concise response. Do not invent facts.\n"
+                "5. Never output robotic phrases like 'Here is the clearest resume-backed answer' or 'No resume matches were found'."
             )
+
+            history_lines = []
+            effective_history = chat_history or [m.model_dump() for m in visible_messages]
+            if effective_history:
+                for msg in effective_history[-6:]:
+                    r = "User" if msg.get("role") == "user" else "Assistant"
+                    c = (msg.get("content") or "").strip()
+                    if c:
+                        history_lines.append(f"{r}: {c}")
+
+            history_section = ("Conversation History:\n" + "\n".join(history_lines)) if history_lines else "Conversation History: None"
             user_prompt = (
-                f"Question: {question}\n\n"
-                f"Tools used: {', '.join(tool_calls)}\n\n"
-                f"Resume specialist output:\n{resume_context or 'Not used.'}\n\n"
-                f"Live web specialist output:\n{web_context or 'Not used.'}"
+                f"{history_section}\n\n"
+                f"Current User Message: {question}\n\n"
+                f"Specialist tools called: {', '.join(tool_list) if tool_list else 'None'}\n\n"
+                f"Resume context:\n{resume_context or 'None / Not used.'}\n\n"
+                f"Live web context:\n{web_context or 'None / Not used.'}"
             )
+
             if is_gemini_active():
                 gem_client = get_gemini_client()
                 raw_response = gem_client.models.generate_content(
@@ -2015,9 +2058,15 @@ async def run_master_agent(request: MasterChatRequest, session: Optional[ClientS
                 return (response.choices[0].message.content or "").strip()
         except Exception as exc:
             warnings.append(f"Graph final synthesis failed: {exc}")
+            if resume_context and "no resume matches" not in resume_context.lower():
+                return resume_context
+            if web_context and "no live web matches" not in web_context.lower():
+                return web_context
+            if any(term in question.lower() for term in ("pathetic", "bad", "wrong", "unhelpful")):
+                return "I apologize for that previous response. Please let me know what specific information about Adarsh's background, projects, or skills you're looking for, and I'll be glad to help."
             return (
-                f"Resume context:\n{resume_context or 'No resume context available.'}\n\n"
-                f"Live web context:\n{web_context or 'No live web context available.'}"
+                "I couldn't find a direct match in Adarsh's resume for that question. "
+                "Adarsh's profile focuses on backend development, Java, Spring Boot, microservices, and Docker at Neeve.ai."
             )
 
     initial_state = {
@@ -2038,6 +2087,7 @@ async def run_master_agent(request: MasterChatRequest, session: Optional[ClientS
         "resume_agent": run_resume_agent,
         "web_agent": run_web_agent,
         "synthesizer": synthesize_graph_contexts,
+        "conversational_agent": synthesize_graph_contexts,
         "tool_payloads": [],
     }
 
