@@ -2325,3 +2325,173 @@ def log_feedback(request: FeedbackRequest):
         },
     )
     return {"status": "ok"}
+
+
+# ===========================================================================
+# ADVANCED RAG ENDPOINTS -- appended below existing code; nothing above changed
+# ===========================================================================
+import asyncio as _rag_asyncio
+from fastapi import UploadFile, File
+from fastapi.responses import JSONResponse as _JSONResponse
+from typing import List as _RagList, Optional as _RagOptional
+from pydantic import Field as _RagField
+
+
+class RAGQueryRequest(StrictBaseModel):
+    """Request body for the /rag/query endpoint."""
+    question: str = _RagField(min_length=2, max_length=1000)
+    doc_id: _RagOptional[str] = None
+    top_k: int = _RagField(default=5, ge=1, le=20)
+    enable_compression: bool = True
+    enable_multi_query: bool = True
+
+
+def _get_rag_pipeline_instance():
+    """Lazy import so the RAG module loads only on first call."""
+    from rag_pipeline import get_rag_pipeline
+    return get_rag_pipeline()
+
+
+@app.post("/rag/upload")
+async def rag_upload(files: _RagList[UploadFile] = File(...)):
+    """
+    Upload one or more documents (PDF, TXT, DOCX, MD) for RAG indexing.
+
+    Each document is:
+      1. Parsed and extracted into raw text
+      2. Split into overlapping chunks via RecursiveCharacterTextSplitter
+      3. Embedded with sentence-transformers/all-MiniLM-L6-v2
+      4. Upserted into Pinecone under namespace user-docs-{doc_id}
+
+    Returns doc_id (use this for /rag/query) and chunk statistics.
+    """
+    if not files:
+        return _JSONResponse(status_code=400, content={"error": "No files provided."})
+
+    pipeline = _get_rag_pipeline_instance()
+    results = []
+    errors = []
+
+    for upload_file in files:
+        try:
+            file_bytes = await upload_file.read()
+            filename = upload_file.filename or "unnamed"
+            ingested = await _rag_asyncio.to_thread(
+                pipeline.ingest_document, filename, file_bytes
+            )
+            results.append({
+                "doc_id": ingested.doc_id,
+                "filename": ingested.filename,
+                "namespace": ingested.namespace,
+                "chunk_count": ingested.chunk_count,
+                "char_count": ingested.char_count,
+                "ingestion_time_ms": ingested.ingestion_time_ms,
+                "status": "success",
+            })
+        except Exception as exc:
+            errors.append({
+                "filename": getattr(upload_file, "filename", "unknown"),
+                "error": str(exc),
+                "status": "failed",
+            })
+
+    return {
+        "uploaded": results,
+        "failed": errors,
+        "total_files": len(files),
+        "success_count": len(results),
+        "failure_count": len(errors),
+    }
+
+
+@app.post("/rag/query")
+async def rag_query(request: RAGQueryRequest):
+    """
+    Query indexed documents using the full Advanced RAG pipeline.
+
+    Pipeline stages:
+      Pre-retrieval  : LLM query rewriting + multi-query generation + domain routing
+      During         : Hybrid retrieval (dense vector + BM25 + RRF) + MMR + cross-encoder reranking
+      Post-retrieval : LLM contextual compression (filters noise)
+      Generation     : Grounded answer with inline [Source N] citations (anti-hallucination)
+
+    Pass doc_id (returned from /rag/upload) to query a specific document.
+    Leave doc_id null to query the default resume Pinecone index.
+
+    The response includes a full evaluation_trace compatible with Ragas and LangSmith.
+    """
+    pipeline = _get_rag_pipeline_instance()
+    try:
+        rag_response = await _rag_asyncio.to_thread(
+            pipeline.query,
+            question=request.question,
+            doc_id=request.doc_id,
+            top_k=request.top_k,
+            enable_compression=request.enable_compression,
+            enable_multi_query=request.enable_multi_query,
+        )
+    except Exception as exc:
+        return _JSONResponse(
+            status_code=500,
+            content={"error": f"RAG pipeline failed: {exc}", "question": request.question},
+        )
+
+    citations_payload = [
+        {
+            "chunk_id": cit.chunk_id,
+            "filename": cit.filename,
+            "chunk_index": cit.chunk_index,
+            "excerpt": cit.relevant_excerpt,
+        }
+        for cit in rag_response.citations
+    ]
+
+    trace_payload = None
+    if rag_response.evaluation_trace:
+        trace = rag_response.evaluation_trace
+        trace_payload = {
+            "question": trace.question,
+            "rewritten_query": trace.rewritten_query,
+            "multi_queries": trace.multi_queries,
+            "namespace": trace.namespace,
+            "retrieved_chunk_count": len(trace.retrieved_chunks),
+            "mmr_selected_count": len(trace.mmr_selected_chunks),
+            "reranked_count": len(trace.reranked_chunks),
+            "compressed_count": len(trace.compressed_chunks),
+            "latency_breakdown": trace.latency_breakdown,
+            "ragas_dict": trace.to_ragas_dict(),
+            "langsmith_metadata": trace.to_langsmith_metadata(),
+        }
+
+    return {
+        "question": request.question,
+        "answer": rag_response.answer,
+        "citations": citations_payload,
+        "retrieved_chunk_count": rag_response.retrieved_chunk_count,
+        "final_chunk_count": rag_response.final_chunk_count,
+        "rewritten_query": rag_response.rewritten_query,
+        "multi_queries": rag_response.multi_queries,
+        "latency_ms": rag_response.latency_ms,
+        "evaluation_trace": trace_payload,
+    }
+
+
+@app.get("/rag/documents")
+def rag_list_documents():
+    """
+    List all user-uploaded document namespaces currently indexed in Pinecone.
+    Returns doc_id, namespace name, and vector count for each document.
+    Use the doc_id with /rag/query to target a specific document.
+    """
+    try:
+        from rag_pipeline import PineconeIndexService
+        docs = PineconeIndexService.list_user_namespaces()
+        return {
+            "documents": docs,
+            "total_count": len(docs),
+        }
+    except Exception as exc:
+        return _JSONResponse(
+            status_code=500,
+            content={"error": f"Could not list documents: {exc}"},
+        )
